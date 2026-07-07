@@ -104,9 +104,12 @@
   </div>
   <div class="no-print" style="display:flex; gap:8px;">
     <button class="btn secondary" id="btnNovo">+ Novo ensaio</button>
+    <button class="btn secondary" id="btnImportar">📥 Importar ensaio</button>
     <button class="btn secondary" id="btnPrint">🖨️ Imprimir vista atual</button>
   </div>
 </div>
+
+<input type="file" id="importInput" accept="application/json" style="display:none">
 
 <div class="driveBanner no-print" id="driveBanner"></div>
 
@@ -160,6 +163,7 @@
       <button class="btn secondary" id="btnGaleria">📷 Ver tratamento + foto</button>
       <button class="btn secondary" id="btnVoltarSetup">⚙️ Editar configuração</button>
       <button class="btn secondary" id="btnSyncDrive">☁️ Sincronizar com Drive</button>
+      <button class="btn secondary" id="btnExportar">📤 Exportar ensaio</button>
       <button class="btn" id="btnSalvar">💾 Salvar ensaio</button>
     </div>
   </div>
@@ -535,6 +539,76 @@ function renderGaleria(){
   });
 }
 
+// ---------- exportar / importar ensaio ----------
+function exportEnsaio(){
+  const e = currentEnsaio();
+  if(!e) return;
+  const data = JSON.stringify(e, null, 2);
+  const blob = new Blob([data], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const safe = (e.nome || 'ensaio').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
+  a.href = url;
+  a.download = `ensaio-${safe}-${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function addImportedAsNew(imported){
+  const id = uid();
+  const clone = JSON.parse(JSON.stringify(imported));
+  clone.id = id;
+  clone.criadoEm = Date.now();
+  clone.driveFolderId = null;
+  clone.plots.forEach(p=>{ p.driveStatus = null; p.driveFileId = null; p.driveViewUrl = null; });
+  state.ensaios[id] = clone;
+  saveStorage();
+  return id;
+}
+
+function importEnsaioFile(file){
+  const reader = new FileReader();
+  reader.onload = (ev)=>{
+    let imported;
+    try{ imported = JSON.parse(ev.target.result); }
+    catch(err){ alert('Arquivo inválido. Não foi possível importar.'); return; }
+    if(!imported || !imported.nome || !Array.isArray(imported.plots) || !Array.isArray(imported.tratamentos)){
+      alert('Este arquivo não parece ser um ensaio exportado por este app.');
+      return;
+    }
+    const existingId = Object.keys(state.ensaios).find(id =>
+      (state.ensaios[id].nome || '').trim().toLowerCase() === (imported.nome || '').trim().toLowerCase()
+    );
+    let targetId;
+    if(existingId){
+      const merge = confirm(`Já existe um ensaio chamado "${imported.nome}".\n\nOK = mesclar as fotos importadas nesse ensaio existente (preenche só as parcelas sem foto)\nCancelar = importar como um ensaio novo separado`);
+      if(merge){
+        const existing = state.ensaios[existingId];
+        let preenchidas = 0;
+        imported.plots.forEach(ip=>{
+          const ep = existing.plots.find(p=>p.id === ip.id);
+          if(ep && !ep.foto && ip.foto){
+            ep.foto = ip.foto; ep.driveStatus = null; ep.driveFileId = null; ep.driveViewUrl = null;
+            preenchidas++;
+          }
+        });
+        saveStorage();
+        targetId = existingId;
+        alert(`Mesclado: ${preenchidas} foto(s) adicionada(s) ao ensaio existente.`);
+      } else {
+        targetId = addImportedAsNew(imported);
+      }
+    } else {
+      targetId = addImportedAsNew(imported);
+    }
+    renderSaved();
+    abrirEnsaio(targetId);
+  };
+  reader.readAsText(file);
+}
+
 function compressImage(file, cb){
   const reader = new FileReader();
   reader.onload = (e)=>{
@@ -626,6 +700,13 @@ document.getElementById('btnSalvar').addEventListener('click', ()=>{
 });
 document.getElementById('btnPrint').addEventListener('click', ()=> window.print());
 document.getElementById('btnSyncDrive').addEventListener('click', ()=> syncPendingPhotos(false));
+document.getElementById('btnExportar').addEventListener('click', exportEnsaio);
+document.getElementById('btnImportar').addEventListener('click', ()=> document.getElementById('importInput').click());
+document.getElementById('importInput').addEventListener('change', (ev)=>{
+  const file = ev.target.files[0];
+  if(file) importEnsaioFile(file);
+  ev.target.value = '';
+});
 
 document.getElementById('fileInput').addEventListener('change', (ev)=>{
   const file = ev.target.files[0];
