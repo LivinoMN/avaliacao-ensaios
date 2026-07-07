@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Avaliação de Ensaios</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#3a6b3a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Ensaios">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root{ color-scheme: light; }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:16px; background:#f7f7f5; color:#1f2320;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:14px;
+  }
+  h1{font-size:20px; margin:0 0 4px 0;}
+  h2{font-size:16px; margin:0 0 10px 0;}
+  .muted{color:#6b7269; font-size:12.5px;}
+  .top{display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px; margin-bottom:14px;}
+  .btn{
+    background:#3a6b3a; color:#fff; border:none; border-radius:6px; padding:8px 14px;
+    font-size:13px; cursor:pointer; font-weight:600;
+  }
+  .btn:hover{background:#2f5931;}
+  .btn.secondary{background:#e7e6e1; color:#2b2f2c;}
+  .btn.secondary:hover{background:#dcdad3;}
+  .btn.danger{background:#b3452f;}
+  .btn.danger:hover{background:#93381f;}
+  .btn:disabled{opacity:.5; cursor:not-allowed;}
+  .card{background:#fff; border:1px solid #e3e2dc; border-radius:10px; padding:16px; margin-bottom:14px;}
+  label{display:block; font-weight:600; margin-bottom:4px; font-size:13px;}
+  input[type=text], input[type=number], textarea, select{
+    width:100%; padding:8px 10px; border:1px solid #d3d1c8; border-radius:6px; font-size:13px;
+    font-family:inherit; background:#fff; color:#1f2320;
+  }
+  textarea{min-height:80px; resize:vertical;}
+  .row{display:flex; gap:14px; flex-wrap:wrap;}
+  .row > div{flex:1; min-width:180px;}
+  .field{margin-bottom:12px;}
+  .hint{font-size:11.5px; color:#7c8177; margin-top:3px;}
+  .savedList{display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;}
+  .savedChip{
+    display:flex; align-items:center; gap:6px; background:#eef1ea; border:1px solid #d6dccb;
+    border-radius:20px; padding:4px 10px 4px 12px; font-size:12.5px; cursor:pointer;
+  }
+  .savedChip:hover{background:#e2e7d9;}
+  .savedChip .x{color:#a04; font-weight:700; padding:0 3px;}
+  .tabs{display:flex; gap:6px; margin-bottom:14px;}
+  .tab{padding:7px 14px; border-radius:6px; background:#e7e6e1; cursor:pointer; font-size:13px; font-weight:600;}
+  .tab.active{background:#3a6b3a; color:#fff;}
+  .hidden{display:none !important;}
+  .grid{display:grid; gap:8px;}
+  .plot{
+    border:1px solid #cfcdc4; border-radius:8px; padding:6px; text-align:center; position:relative;
+    break-inside:avoid; min-height:78px; display:flex; flex-direction:column; justify-content:space-between;
+  }
+  .plot .num{font-size:10px; color:#555; font-weight:600;}
+  .plot .trt{font-size:12.5px; font-weight:700; margin:2px 0;}
+  .plot select{font-size:11px; padding:3px 4px; margin-top:2px;}
+  .plot .photoRow{display:flex; justify-content:center; align-items:center; gap:4px; margin-top:2px;}
+  .plot .camBtn{
+    background:#fff; border:1px solid #b8b5aa; border-radius:5px; font-size:10.5px; padding:2px 6px; cursor:pointer;
+  }
+  .plot .thumb{width:26px; height:26px; object-fit:cover; border-radius:4px; border:1px solid #b8b5aa; cursor:pointer;}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th, td{border:1px solid #e3e2dc; padding:6px 8px; text-align:left;}
+  th{background:#f0efe9;}
+  td img{width:64px; height:64px; object-fit:cover; border-radius:6px; cursor:pointer;}
+  .legend{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;}
+  .legend span{display:inline-flex; align-items:center; gap:5px; font-size:12px;}
+  .legend i{width:12px; height:12px; border-radius:3px; display:inline-block;}
+  .cloudIcon{border:none; background:none; font-size:12px; cursor:pointer; padding:0 2px; text-decoration:none;}
+  .cloudIcon.pending{color:#a06a2b;}
+  .cloudIcon.ok{color:#2f6b3a;}
+  .driveBanner{
+    display:flex; align-items:center; gap:8px; font-size:12px; padding:6px 10px; border-radius:6px; margin-bottom:12px;
+  }
+  .driveBanner.on{background:#eaf3ea; color:#2f6b3a;}
+  .driveBanner.off{background:#f1efe9; color:#7c8177;}
+  .modalBg{
+    position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:50;
+  }
+  .modal{background:#fff; border-radius:10px; padding:18px; max-width:90vw; max-height:90vh; overflow:auto;}
+  .modal img{max-width:70vw; max-height:70vh; display:block; margin-bottom:10px; border-radius:6px;}
+  .note{background:#fff8e6; border:1px solid #eddca5; border-radius:8px; padding:10px 12px; font-size:12.5px; margin-bottom:14px;}
+  @media print{
+    body{background:#fff; padding:0;}
+    .no-print{display:none !important;}
+    .card{border:none; box-shadow:none; padding:0;}
+    .plot{border:1px solid #999;}
+  }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div>
+    <h1>🌾 Avaliação de Ensaios</h1>
+    <div class="muted">Vincule tratamentos a fotos, gere o croqui de campo e confira parcela por parcela.</div>
+  </div>
+  <div class="no-print" style="display:flex; gap:8px;">
+    <button class="btn secondary" id="btnNovo">+ Novo ensaio</button>
+    <button class="btn secondary" id="btnPrint">🖨️ Imprimir vista atual</button>
+  </div>
+</div>
+
+<div class="driveBanner no-print" id="driveBanner"></div>
+
+<div class="card no-print" id="savedCard">
+  <h2 style="margin-bottom:6px;">Ensaios salvos</h2>
+  <div class="savedList" id="savedList"><span class="muted">Nenhum ensaio salvo ainda.</span></div>
+</div>
+
+<!-- SETUP VIEW -->
+<div id="viewSetup" class="card">
+  <h2>Configuração do ensaio</h2>
+  <div class="field">
+    <label>Nome do ensaio</label>
+    <input type="text" id="fNome" placeholder="Ex: Ensaio Soja 2026 - Fazenda Santa Rita">
+  </div>
+  <div class="field">
+    <label>Tratamentos</label>
+    <textarea id="fTratamentos" placeholder="Um tratamento por linha, ex:&#10;T1 - Testemunha&#10;T2 - Produto A&#10;T3 - Produto B"></textarea>
+    <div class="hint">Um tratamento por linha (ou separados por vírgula).</div>
+  </div>
+  <div class="row">
+    <div class="field">
+      <label>Repetições</label>
+      <input type="number" id="fReps" min="1" value="4">
+    </div>
+    <div class="field">
+      <label>Casualização</label>
+      <select id="fTipo">
+        <option value="dbc">Blocos casualizados (DBC)</option>
+        <option value="dic">Inteiramente casualizado (DIC)</option>
+        <option value="escada">Casualizado com deslocamento ("escada")</option>
+        <option value="manual">Manual (eu defino a posição)</option>
+      </select>
+    </div>
+    <div class="field" id="colWrap">
+      <label>Colunas do croqui (DIC)</label>
+      <input type="number" id="fColunas" min="1" value="4">
+    </div>
+  </div>
+  <div class="note" id="tipoNote"></div>
+  <button class="btn" id="btnGerar">Gerar croqui</button>
+</div>
+
+<!-- CROQUI VIEW -->
+<div id="viewCroqui" class="card hidden">
+  <div class="top no-print" style="margin-bottom:10px;">
+    <h2 id="croquiTitulo">Croqui</h2>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="btn secondary" id="btnEditar">✏️ Ativar edição manual</button>
+      <button class="btn secondary" id="btnRerandom">🔀 Rerandomizar</button>
+      <button class="btn secondary" id="btnGaleria">📷 Ver tratamento + foto</button>
+      <button class="btn secondary" id="btnVoltarSetup">⚙️ Editar configuração</button>
+      <button class="btn secondary" id="btnSyncDrive">☁️ Sincronizar com Drive</button>
+      <button class="btn" id="btnSalvar">💾 Salvar ensaio</button>
+    </div>
+  </div>
+  <div class="muted" id="croquiInfo" style="margin-bottom:4px;"></div>
+  <div class="muted no-print" id="croquiDriveLink" style="margin-bottom:10px;"></div>
+  <div class="grid" id="croquiGrid"></div>
+  <div class="legend" id="legend"></div>
+</div>
+
+<!-- GALERIA VIEW -->
+<div id="viewGaleria" class="card hidden">
+  <div class="top no-print" style="margin-bottom:10px;">
+    <h2>Tratamento + Foto — <span id="galeriaTitulo"></span></h2>
+    <div style="display:flex; gap:8px;">
+      <button class="btn secondary" id="btnVoltarCroqui">← Voltar ao croqui</button>
+    </div>
+  </div>
+  <table id="galeriaTable">
+    <thead><tr><th>Parcela</th><th>Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th class="no-print">Drive</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<input type="file" id="fileInput" accept="image/*" capture="environment" style="display:none">
+
+<script>
+const STORAGE_KEY = 'avaliacao_ensaios_v1';
+let state = { ensaios: {}, atualId: null, view: 'setup', editMode: false, pendingPlotId: null };
+
+function loadStorage(){
+  try{ const raw = localStorage.getItem(STORAGE_KEY); state.ensaios = raw ? JSON.parse(raw) : {}; }
+  catch(e){ state.ensaios = {}; }
+}
+function saveStorage(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.ensaios));
+}
+function uid(){ return 'e' + Date.now() + Math.floor(Math.random()*1000); }
+
+// ---------- Google Drive sync ----------
+const DRIVE_TOOL_PREFIX = 'mcp__a92f7514-cab4-48bf-9aee-b5e815248d22__';
+const DRIVE_BASE_FOLDER_NAME = 'Avaliação de Ensaios - Fotos';
+const DRIVE_BASE_KEY = 'avaliacao_drive_base_folder_id';
+const DRIVE_AVAILABLE = !!(window.cowork && typeof window.cowork.callMcpTool === 'function');
+let driveBaseFolderId = null;
+
+async function callDrive(tool, args){
+  const r = await window.cowork.callMcpTool(DRIVE_TOOL_PREFIX + tool, args);
+  if(r.isError){
+    const msg = (r.content && r.content[0] && r.content[0].text) || 'Erro ao acessar o Google Drive';
+    throw new Error(msg);
+  }
+  return r.structuredContent ?? JSON.parse(r.content[0].text);
+}
+
+function escapeForQuery(s){ return String(s).replace(/'/g, "\\'"); }
+
+async function ensureBaseFolder(){
+  if(driveBaseFolderId) return driveBaseFolderId;
+  const cached = localStorage.getItem(DRIVE_BASE_KEY);
+  if(cached){ driveBaseFolderId = cached; return cached; }
+  const q = `title = '${escapeForQuery(DRIVE_BASE_FOLDER_NAME)}' and mimeType = 'application/vnd.google-apps.folder' and parentId = 'root'`;
+  const found = await callDrive('search_files', { query: q });
+  let id;
+  if(found.files && found.files.length){ id = found.files[0].id; }
+  else{
+    const created = await callDrive('create_file', { title: DRIVE_BASE_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' });
+    id = created.id;
+  }
+  driveBaseFolderId = id;
+  localStorage.setItem(DRIVE_BASE_KEY, id);
+  return id;
+}
+
+async function ensureEnsaioFolder(e){
+  if(e.driveFolderId) return e.driveFolderId;
+  const baseId = await ensureBaseFolder();
+  const q = `title = '${escapeForQuery(e.nome)}' and mimeType = 'application/vnd.google-apps.folder' and parentId = '${baseId}'`;
+  const found = await callDrive('search_files', { query: q });
+  let id;
+  if(found.files && found.files.length){ id = found.files[0].id; }
+  else{
+    const created = await callDrive('create_file', { title: e.nome, mimeType: 'application/vnd.google-apps.folder', parentId: baseId });
+    id = created.id;
+  }
+  e.driveFolderId = id;
+  saveStorage();
+  return id;
+}
+
+async function uploadPhotoToDrive(e, plot){
+  if(!DRIVE_AVAILABLE || !plot.foto) return;
+  plot.driveStatus = 'uploading';
+  renderCroqui();
+  try{
+    const folderId = await ensureEnsaioFolder(e);
+    const base64 = plot.foto.split(',')[1];
+    const title = `Parcela ${plot.id} - ${plot.tratamento}.jpg`;
+    const file = await callDrive('create_file', {
+      title,
+      parentId: folderId,
+      base64Content: base64,
+      contentMimeType: 'image/jpeg',
+      disableConversionToGoogleType: true
+    });
+    plot.driveFileId = file.id;
+    plot.driveViewUrl = file.viewUrl;
+    plot.driveStatus = 'ok';
+  }catch(err){
+    console.error('Erro ao enviar foto para o Drive:', err);
+    plot.driveStatus = 'error';
+  }
+  saveStorage();
+  renderCroqui();
+}
+
+async function syncPendingPhotos(silent){
+  const e = currentEnsaio();
+  if(!e || !DRIVE_AVAILABLE) return;
+  const pendentes = e.plots.filter(p => p.foto && p.driveStatus !== 'ok' && p.driveStatus !== 'uploading');
+  for(const p of pendentes){ await uploadPhotoToDrive(e, p); }
+  if(!silent && pendentes.length){ renderCroqui(); }
+  if(!silent) alert(pendentes.length ? 'Sincronização com o Drive concluída.' : 'Nenhuma foto pendente de envio.');
+}
+
+function renderDriveBanner(){
+  const el = document.getElementById('driveBanner');
+  if(DRIVE_AVAILABLE){
+    el.className = 'driveBanner on no-print';
+    el.textContent = '☁️ Google Drive conectado — as fotos são enviadas automaticamente para a pasta "Avaliação de Ensaios - Fotos".';
+  } else {
+    el.className = 'driveBanner off no-print';
+    el.textContent = '📵 Sincronização com o Google Drive só funciona na versão aberta pelo Cowork no computador. Fotos ficam salvas apenas neste dispositivo.';
+  }
+}
+
+function shuffle(arr){
+  const a = arr.slice();
+  for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+  return a;
+}
+
+const TIPO_DESC = {
+  dbc: 'Cada repetição forma um bloco; dentro de cada bloco os tratamentos são sorteados de forma independente.',
+  dic: 'Todos os tratamentos × repetições são sorteados juntos e distribuídos livremente na grade, sem blocos.',
+  escada: 'Casualizado: uma ordem base é sorteada uma única vez. Na repetição 2 a primeira parcela recebe o tratamento que estava na 2ª posição da ordem base, na repetição 3 recebe o que estava na 3ª posição, e assim por diante — sempre pulando 1.',
+  manual: 'Uma sugestão inicial (blocos casualizados) é gerada e você pode alterar o tratamento de qualquer parcela.'
+};
+
+function gerarPlots(tratamentos, reps, tipo, colunas){
+  const plots = [];
+  let idx = 1;
+  if(tipo === 'dic'){
+    let pool = [];
+    tratamentos.forEach(t => { for(let i=0;i<reps;i++) pool.push(t); });
+    pool = shuffle(pool);
+    const cols = Math.max(1, colunas);
+    pool.forEach((t,i)=>{
+      plots.push({id:idx++, linha:Math.floor(i/cols)+1, coluna:(i%cols)+1, bloco:null, tratamento:t, foto:null});
+    });
+  } else if(tipo === 'escada'){
+    const base = shuffle(tratamentos);
+    const cols = base.length;
+    for(let b=1;b<=reps;b++){
+      const shift = (b-1) % cols;
+      const ordem = base.slice(shift).concat(base.slice(0,shift));
+      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, foto:null}); });
+    }
+  } else { // dbc or manual (manual starts from dbc suggestion)
+    const cols = tratamentos.length;
+    for(let b=1;b<=reps;b++){
+      const ordem = shuffle(tratamentos);
+      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, foto:null}); });
+    }
+  }
+  return plots;
+}
+
+function colorFor(t){
+  let hash = 0;
+  for(let i=0;i<t.length;i++) hash = t.charCodeAt(i) + ((hash<<5)-hash);
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 55%, 88%)`;
+}
+
+// ---------- rendering ----------
+function renderSaved(){
+  const wrap = document.getElementById('savedList');
+  const ids = Object.keys(state.ensaios);
+  if(ids.length === 0){ wrap.innerHTML = '<span class="muted">Nenhum ensaio salvo ainda.</span>'; return; }
+  wrap.innerHTML = '';
+  ids.sort((a,b)=> (state.ensaios[b].criadoEm||0) - (state.ensaios[a].criadoEm||0));
+  ids.forEach(id=>{
+    const e = state.ensaios[id];
+    const chip = document.createElement('div');
+    chip.className = 'savedChip';
+    chip.innerHTML = `<span>${e.nome || '(sem nome)'}</span><span class="x" data-id="${id}">✕</span>`;
+    chip.addEventListener('click', (ev)=>{
+      if(ev.target.classList.contains('x')) return;
+      abrirEnsaio(id);
+    });
+    chip.querySelector('.x').addEventListener('click', (ev)=>{
+      ev.stopPropagation();
+      if(confirm(`Excluir o ensaio "${e.nome}"?`)){
+        delete state.ensaios[id];
+        saveStorage();
+        renderSaved();
+        if(state.atualId === id){ novoEnsaio(); }
+      }
+    });
+    wrap.appendChild(chip);
+  });
+}
+
+function abrirEnsaio(id){
+  state.atualId = id;
+  state.editMode = state.ensaios[id].tipo === 'manual';
+  showView('croqui');
+  renderCroqui();
+  syncPendingPhotos(true);
+}
+
+function novoEnsaio(){
+  state.atualId = null;
+  state.editMode = false;
+  document.getElementById('fNome').value = '';
+  document.getElementById('fTratamentos').value = '';
+  document.getElementById('fReps').value = 4;
+  document.getElementById('fTipo').value = 'dbc';
+  document.getElementById('fColunas').value = 4;
+  updateTipoUI();
+  showView('setup');
+}
+
+function showView(v){
+  state.view = v;
+  document.getElementById('viewSetup').classList.toggle('hidden', v!=='setup');
+  document.getElementById('viewCroqui').classList.toggle('hidden', v!=='croqui');
+  document.getElementById('viewGaleria').classList.toggle('hidden', v!=='galeria');
+  document.getElementById('savedCard').classList.toggle('hidden', v!=='setup');
+}
+
+function updateTipoUI(){
+  const tipo = document.getElementById('fTipo').value;
+  document.getElementById('tipoNote').textContent = TIPO_DESC[tipo];
+  document.getElementById('colWrap').classList.toggle('hidden', tipo !== 'dic');
+}
+
+function parseTratamentos(raw){
+  return raw.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
+}
+
+function currentEnsaio(){ return state.ensaios[state.atualId]; }
+
+function renderCroqui(){
+  const e = currentEnsaio();
+  if(!e) return;
+  document.getElementById('croquiTitulo').textContent = e.nome;
+  const tipoLabel = {dic:'Inteiramente casualizado', dbc:'Blocos casualizados', escada:'Casualizado com deslocamento (escada)', manual:'Manual'}[e.tipo];
+  document.getElementById('croquiInfo').textContent =
+    `${e.tratamentos.length} tratamentos × ${e.repeticoes} repetições — ${tipoLabel} — ${e.plots.length} parcelas`;
+
+  const cols = e.tipo === 'dic' ? e.colunas : e.tratamentos.length;
+  const grid = document.getElementById('croquiGrid');
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  grid.innerHTML = '';
+
+  document.getElementById('btnRerandom').classList.toggle('hidden', e.tipo === 'manual');
+  document.getElementById('btnEditar').textContent = state.editMode ? '✅ Concluir edição' : '✏️ Ativar edição manual';
+  document.getElementById('btnSyncDrive').classList.toggle('hidden', !DRIVE_AVAILABLE);
+  const driveLinkEl = document.getElementById('croquiDriveLink');
+  driveLinkEl.innerHTML = (DRIVE_AVAILABLE && e.driveFolderId)
+    ? `☁️ <a href="https://drive.google.com/drive/folders/${e.driveFolderId}" target="_blank">Abrir pasta deste ensaio no Drive</a>`
+    : '';
+
+  e.plots.forEach(p=>{
+    const div = document.createElement('div');
+    div.className = 'plot';
+    div.style.background = colorFor(p.tratamento);
+    let inner = `<div class="num">#${p.id}${p.bloco ? ' · Bloco '+p.bloco : ''}</div>`;
+    if(state.editMode){
+      inner += `<select data-plot="${p.id}" class="trtSelect">` +
+        e.tratamentos.map(t=>`<option value="${t}" ${t===p.tratamento?'selected':''}>${t}</option>`).join('') +
+        `</select>`;
+    } else {
+      inner += `<div class="trt">${p.tratamento}</div>`;
+    }
+    inner += `<div class="photoRow">`;
+    if(p.foto){
+      inner += `<img class="thumb" data-plot="${p.id}" src="${p.foto}">`;
+    }
+    inner += `<button class="camBtn no-print" data-plot="${p.id}">📷</button>`;
+    if(DRIVE_AVAILABLE && p.foto){
+      if(p.driveStatus === 'ok'){
+        inner += `<a class="cloudIcon ok no-print" href="${p.driveViewUrl}" target="_blank" title="Ver no Drive">☁️✓</a>`;
+      } else if(p.driveStatus === 'uploading'){
+        inner += `<span class="cloudIcon no-print" title="Enviando...">⏳</span>`;
+      } else {
+        inner += `<button class="cloudIcon pending no-print" data-plot="${p.id}" title="Enviar para o Drive">☁️</button>`;
+      }
+    }
+    inner += `</div>`;
+    div.innerHTML = inner;
+    grid.appendChild(div);
+  });
+
+  // legend
+  const legend = document.getElementById('legend');
+  legend.innerHTML = '';
+  e.tratamentos.forEach(t=>{
+    const s = document.createElement('span');
+    s.innerHTML = `<i style="background:${colorFor(t)}"></i>${t}`;
+    legend.appendChild(s);
+  });
+
+  grid.querySelectorAll('.camBtn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.pendingPlotId = parseInt(btn.dataset.plot);
+      document.getElementById('fileInput').click();
+    });
+  });
+  grid.querySelectorAll('.thumb').forEach(img=>{
+    img.addEventListener('click', ()=> showPhotoModal(img.src));
+  });
+  grid.querySelectorAll('.trtSelect').forEach(sel=>{
+    sel.addEventListener('change', ()=>{
+      const plotId = parseInt(sel.dataset.plot);
+      const plot = e.plots.find(pp=>pp.id===plotId);
+      plot.tratamento = sel.value;
+      if(plot.foto){ plot.driveStatus = null; plot.driveFileId = null; plot.driveViewUrl = null; }
+      saveStorage();
+      renderCroqui();
+    });
+  });
+  grid.querySelectorAll('.cloudIcon.pending').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const plotId = parseInt(btn.dataset.plot);
+      const plot = e.plots.find(pp=>pp.id===plotId);
+      uploadPhotoToDrive(e, plot);
+    });
+  });
+}
+
+function showPhotoModal(src){
+  const bg = document.createElement('div');
+  bg.className = 'modalBg';
+  bg.innerHTML = `<div class="modal"><img src="${src}"><button class="btn secondary">Fechar</button></div>`;
+  bg.addEventListener('click', (e)=>{ if(e.target===bg) bg.remove(); });
+  bg.querySelector('button').addEventListener('click', ()=> bg.remove());
+  document.body.appendChild(bg);
+}
+
+function renderGaleria(){
+  const e = currentEnsaio();
+  if(!e) return;
+  document.getElementById('galeriaTitulo').textContent = e.nome;
+  const tbody = document.querySelector('#galeriaTable tbody');
+  tbody.innerHTML = '';
+  e.plots.forEach(p=>{
+    const tr = document.createElement('tr');
+    let driveCell = '<span class="muted">—</span>';
+    if(DRIVE_AVAILABLE && p.foto){
+      if(p.driveStatus === 'ok') driveCell = `<a href="${p.driveViewUrl}" target="_blank">☁️ ver</a>`;
+      else if(p.driveStatus === 'uploading') driveCell = '⏳';
+      else driveCell = '<span class="muted">pendente</span>';
+    }
+    tr.innerHTML = `<td>#${p.id}</td><td>${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
+      `<td>${p.foto ? `<img src="${p.foto}" data-src="${p.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
+      `<td class="no-print">${driveCell}</td>`;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('img').forEach(img=>{
+    img.addEventListener('click', ()=> showPhotoModal(img.dataset.src));
+  });
+}
+
+function compressImage(file, cb){
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const maxW = 500;
+      const scale = Math.min(1, maxW / img.width);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      cb(canvas.toDataURL('image/jpeg', 0.7));
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// ---------- events ----------
+document.getElementById('fTipo').addEventListener('change', updateTipoUI);
+document.getElementById('btnNovo').addEventListener('click', novoEnsaio);
+
+document.getElementById('btnGerar').addEventListener('click', ()=>{
+  const nome = document.getElementById('fNome').value.trim() || 'Ensaio sem nome';
+  const tratamentos = parseTratamentos(document.getElementById('fTratamentos').value);
+  const reps = parseInt(document.getElementById('fReps').value) || 1;
+  const tipo = document.getElementById('fTipo').value;
+  const colunas = parseInt(document.getElementById('fColunas').value) || tratamentos.length || 1;
+
+  if(tratamentos.length < 2){ alert('Informe pelo menos 2 tratamentos.'); return; }
+
+  const id = state.atualId && state.ensaios[state.atualId] ? state.atualId : uid();
+  const plots = gerarPlots(tratamentos, reps, tipo, colunas);
+  state.ensaios[id] = { id, nome, tratamentos, repeticoes: reps, tipo, colunas, plots, criadoEm: Date.now() };
+  state.atualId = id;
+  state.editMode = tipo === 'manual';
+  saveStorage();
+  renderSaved();
+  showView('croqui');
+  renderCroqui();
+});
+
+document.getElementById('btnRerandom').addEventListener('click', ()=>{
+  const e = currentEnsaio();
+  if(!e) return;
+  if(!confirm('Isso vai gerar uma nova randomização e manter as fotos já vinculadas por posição de parcela. Continuar?')) return;
+  const fotos = e.plots.map(p=>p.foto);
+  e.plots = gerarPlots(e.tratamentos, e.repeticoes, e.tipo, e.colunas);
+  e.plots.forEach((p,i)=>{
+    p.foto = fotos[i] || null;
+    // tratamento pode ter mudado de posição: força reenvio ao Drive com o nome correto
+    p.driveStatus = null; p.driveFileId = null; p.driveViewUrl = null;
+  });
+  saveStorage();
+  renderCroqui();
+  syncPendingPhotos(true);
+});
+
+document.getElementById('btnEditar').addEventListener('click', ()=>{
+  state.editMode = !state.editMode;
+  renderCroqui();
+});
+
+document.getElementById('btnGaleria').addEventListener('click', ()=>{
+  showView('galeria');
+  renderGaleria();
+});
+document.getElementById('btnVoltarCroqui').addEventListener('click', ()=>{
+  showView('croqui');
+  renderCroqui();
+});
+document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
+  const e = currentEnsaio();
+  if(e){
+    document.getElementById('fNome').value = e.nome;
+    document.getElementById('fTratamentos').value = e.tratamentos.join('\n');
+    document.getElementById('fReps').value = e.repeticoes;
+    document.getElementById('fTipo').value = e.tipo;
+    document.getElementById('fColunas').value = e.colunas;
+    updateTipoUI();
+  }
+  showView('setup');
+});
+document.getElementById('btnSalvar').addEventListener('click', ()=>{
+  saveStorage();
+  renderSaved();
+  alert('Ensaio salvo. Ele ficará disponível na próxima vez que você abrir este artefato.');
+});
+document.getElementById('btnPrint').addEventListener('click', ()=> window.print());
+document.getElementById('btnSyncDrive').addEventListener('click', ()=> syncPendingPhotos(false));
+
+document.getElementById('fileInput').addEventListener('change', (ev)=>{
+  const file = ev.target.files[0];
+  if(!file || state.pendingPlotId == null) return;
+  compressImage(file, (dataUrl)=>{
+    const e = currentEnsaio();
+    const plot = e.plots.find(p=>p.id === state.pendingPlotId);
+    plot.foto = dataUrl;
+    plot.driveStatus = null;
+    saveStorage();
+    renderCroqui();
+    if(DRIVE_AVAILABLE){ uploadPhotoToDrive(e, plot); }
+  });
+  ev.target.value = '';
+});
+
+// ---------- init ----------
+loadStorage();
+updateTipoUI();
+renderSaved();
+renderDriveBanner();
+showView('setup');
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(err => console.error('SW falhou:', err));
+  });
+}
+</script>
+</body>
+</html>
