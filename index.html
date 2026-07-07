@@ -72,6 +72,11 @@
   .legend{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;}
   .legend span{display:inline-flex; align-items:center; gap:5px; font-size:12px;}
   .legend i{width:12px; height:12px; border-radius:3px; display:inline-block;}
+  .tabs{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;}
+  .tab{padding:7px 12px; border-radius:6px; background:#e7e6e1; cursor:pointer; font-size:12.5px; font-weight:600; border:none; display:flex; align-items:center; gap:6px;}
+  .tab.active{background:#3a6b3a; color:#fff;}
+  .tab .avalLink{font-size:12px; text-decoration:none;}
+  .tab.active .avalLink{filter:brightness(1.6);}
   .modalBg{
     position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:50;
   }
@@ -156,9 +161,16 @@
         <option value="manual">Manual (eu defino a posição)</option>
       </select>
     </div>
+  </div>
+  <div class="row">
     <div class="field" id="colWrap">
-      <label>Colunas do croqui (DIC)</label>
+      <label>Colunas do croqui</label>
       <input type="number" id="fColunas" min="1" value="4">
+    </div>
+    <div class="field" id="linWrap">
+      <label>Linhas do croqui (opcional)</label>
+      <input type="number" id="fLinhas" min="1" placeholder="calculado automaticamente">
+      <div class="hint">Ajuste colunas/linhas conforme o espaço disponível no campo. Se não bater com o total de parcelas, a última linha fica incompleta.</div>
     </div>
   </div>
   <div class="field">
@@ -166,6 +178,12 @@
     <input type="text" id="fObsLabel" placeholder="Observação" value="Observação">
     <div class="hint">Vira um campo de texto livre em cada parcela. Renomeie se quiser, ex: "Estádio fenológico", "Nota de dano".</div>
   </div>
+  <div class="field">
+    <label>Quantas avaliações serão feitas?</label>
+    <input type="number" id="fNumAvaliacoes" min="1" value="1">
+    <div class="hint">Cada avaliação (V1, V2, V3...) guarda sua própria data, fotos e observações por parcela — útil pra acompanhar a evolução do tratamento ao longo do tempo.</div>
+  </div>
+  <div id="avaliacoesDatas"></div>
   <div class="note" id="tipoNote"></div>
   <button class="btn" id="btnGerar">Gerar croqui</button>
 </div>
@@ -183,6 +201,7 @@
     </div>
   </div>
   <div class="muted" id="croquiInfo" style="margin-bottom:10px;"></div>
+  <div class="tabs no-print" id="avalTabs"></div>
   <div class="grid" id="croquiGrid"></div>
   <div class="legend" id="legend"></div>
 </div>
@@ -190,11 +209,12 @@
 <!-- GALERIA VIEW -->
 <div id="viewGaleria" class="card hidden">
   <div class="top no-print" style="margin-bottom:10px;">
-    <h2>Tratamento + Foto — <span id="galeriaTitulo"></span></h2>
+    <h2>Tratamento + Foto — <span id="galeriaTitulo"></span> <span class="muted" id="galeriaAvalLabel"></span></h2>
     <div style="display:flex; gap:8px;">
       <button class="btn secondary" id="btnVoltarCroqui">← Voltar ao croqui</button>
     </div>
   </div>
+  <div class="tabs no-print" id="avalTabsGaleria"></div>
   <table id="galeriaTable">
     <colgroup>
       <col style="width:7%"><col style="width:9%"><col style="width:20%"><col style="width:43%"><col style="width:21%">
@@ -207,12 +227,13 @@
 <!-- RELATORIO VIEW -->
 <div id="viewRelatorio" class="card hidden">
   <div class="top no-print" style="margin-bottom:10px;">
-    <h2>Relatório — <span id="relatorioTitulo"></span></h2>
+    <h2>Relatório — <span id="relatorioTitulo"></span> <span class="muted" id="relatorioAvalLabel"></span></h2>
     <div style="display:flex; gap:8px;">
       <button class="btn secondary" id="btnVoltarRelatorio">← Voltar ao croqui</button>
       <button class="btn" id="btnImprimirRelatorio">🖨️ Imprimir / Salvar PDF</button>
     </div>
   </div>
+  <div class="tabs no-print" id="avalTabsRelatorio"></div>
   <div id="relatorioConteudo"></div>
 </div>
 
@@ -270,12 +291,14 @@ let state = {
   atualId: null,
   view: 'setup',
   editMode: false,
+  colunasTouched: false,
   pendingPlotId: null,
   currentUser: null,
   userRole: null,
   unsubEnsaios: null,
   unsubParcelas: null,
-  suppressRender: false
+  suppressRender: false,
+  avaliacaoAtual: 1
 };
 
 function uid(){ return 'e' + Date.now() + Math.floor(Math.random()*1000); }
@@ -293,16 +316,37 @@ const TIPO_DESC = {
   manual: 'Uma sugestão inicial (blocos casualizados) é gerada e você pode alterar o tratamento de qualquer parcela.'
 };
 
-function gerarPlots(tratamentos, reps, tipo, colunas){
+function criarAvaliacoesVazias(n){
+  const obj = {};
+  for(let i=1;i<=n;i++) obj[i] = { foto: null, observacao: '' };
+  return obj;
+}
+
+// compatibilidade com ensaios antigos (uma foto/observação só, sem avaliações)
+function normalizarPlot(p){
+  if(!p.avaliacoes || typeof p.avaliacoes !== 'object' || Array.isArray(p.avaliacoes)){
+    p.avaliacoes = { 1: { foto: p.foto || null, observacao: p.observacao || '' } };
+  }
+  return p;
+}
+
+function avaliacaoDoPlot(p, num){
+  normalizarPlot(p);
+  if(!p.avaliacoes[num]) p.avaliacoes[num] = { foto: null, observacao: '' };
+  return p.avaliacoes[num];
+}
+
+function gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes){
   const plots = [];
   let idx = 1;
+  const n = numAvaliacoes || 1;
   if(tipo === 'dic'){
     let pool = [];
     tratamentos.forEach(t => { for(let i=0;i<reps;i++) pool.push(t); });
     pool = shuffle(pool);
     const cols = Math.max(1, colunas);
     pool.forEach((t,i)=>{
-      plots.push({id:idx++, linha:Math.floor(i/cols)+1, coluna:(i%cols)+1, bloco:null, tratamento:t, foto:null, observacao:''});
+      plots.push({id:idx++, linha:Math.floor(i/cols)+1, coluna:(i%cols)+1, bloco:null, tratamento:t, avaliacoes: criarAvaliacoesVazias(n)});
     });
   } else if(tipo === 'escada'){
     const base = shuffle(tratamentos);
@@ -310,13 +354,13 @@ function gerarPlots(tratamentos, reps, tipo, colunas){
     for(let b=1;b<=reps;b++){
       const shift = (b-1) % cols;
       const ordem = base.slice(shift).concat(base.slice(0,shift));
-      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, foto:null, observacao:''}); });
+      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, avaliacoes: criarAvaliacoesVazias(n)}); });
     }
   } else {
     const cols = tratamentos.length;
     for(let b=1;b<=reps;b++){
       const ordem = shuffle(tratamentos);
-      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, foto:null, observacao:''}); });
+      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, avaliacoes: criarAvaliacoesVazias(n)}); });
     }
   }
   return plots;
@@ -324,6 +368,37 @@ function gerarPlots(tratamentos, reps, tipo, colunas){
 
 function escapeAttr(s){
   return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function formatarDataBr(iso){
+  if(!iso) return '';
+  const [y,m,d] = iso.split('-');
+  return `${d}/${m}`;
+}
+
+function calendarLink(ensaioNome, avaliacao){
+  if(!avaliacao || !avaliacao.data) return null;
+  const start = avaliacao.data.replace(/-/g,'');
+  const dt = new Date(avaliacao.data + 'T00:00:00');
+  dt.setDate(dt.getDate()+1);
+  const end = dt.toISOString().slice(0,10).replace(/-/g,'');
+  const text = encodeURIComponent(`Avaliação ${avaliacao.numero} - ${ensaioNome}`);
+  const details = encodeURIComponent('Registrar fotos e observações no app: https://livinomn.github.io/avaliacao-ensaios/');
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${start}/${end}&details=${details}`;
+}
+
+function renderAvaliacoesDatas(valoresExistentes){
+  const n = Math.max(1, parseInt(document.getElementById('fNumAvaliacoes').value) || 1);
+  const wrap = document.getElementById('avaliacoesDatas');
+  wrap.innerHTML = '';
+  for(let i=1;i<=n;i++){
+    const existente = valoresExistentes && valoresExistentes.find(a=>a.numero===i);
+    const val = existente ? (existente.data || '') : '';
+    const div = document.createElement('div');
+    div.className = 'field';
+    div.innerHTML = `<label>Data da Avaliação ${i}${i===1?' (opcional)':''}</label><input type="date" class="avalDataInput" data-num="${i}" value="${val}">`;
+    wrap.appendChild(div);
+  }
 }
 
 function colorFor(t, tratamentos){
@@ -403,7 +478,7 @@ function listenParcelas(ensaioId){
   if(state.unsubParcelas) state.unsubParcelas();
   state.unsubParcelas = db.collection('ensaios').doc(ensaioId).collection('parcelas').onSnapshot(snap=>{
     const plots = [];
-    snap.forEach(d=> plots.push(d.data()));
+    snap.forEach(d=> plots.push(normalizarPlot(d.data())));
     plots.sort((a,b)=> a.id - b.id);
     if(state.ensaios[ensaioId]) state.ensaios[ensaioId].plots = plots;
     if(state.atualId === ensaioId && !state.suppressRender){
@@ -459,6 +534,7 @@ function abrirEnsaio(id){
   state.atualId = id;
   const e = state.ensaios[id];
   state.editMode = e.tipo === 'manual';
+  state.avaliacaoAtual = 1;
   showView('croqui');
   listenParcelas(id);
   renderCroqui();
@@ -468,12 +544,16 @@ function novoEnsaio(){
   if(state.unsubParcelas){ state.unsubParcelas(); state.unsubParcelas = null; }
   state.atualId = null;
   state.editMode = false;
+  state.colunasTouched = false;
   document.getElementById('fNome').value = '';
   document.getElementById('fTratamentos').value = '';
   document.getElementById('fReps').value = 4;
   document.getElementById('fTipo').value = 'dbc';
   document.getElementById('fColunas').value = 4;
+  document.getElementById('fLinhas').value = '';
   document.getElementById('fObsLabel').value = 'Observação';
+  document.getElementById('fNumAvaliacoes').value = 1;
+  renderAvaliacoesDatas();
   updateTipoUI();
   showView('setup');
 }
@@ -491,14 +571,50 @@ function showView(v){
 function updateTipoUI(){
   const tipo = document.getElementById('fTipo').value;
   document.getElementById('tipoNote').textContent = TIPO_DESC[tipo];
-  document.getElementById('colWrap').classList.toggle('hidden', tipo !== 'dic');
 }
 
 function parseTratamentos(raw){
   return raw.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
 }
 
+function sugerirColunas(){
+  if(state.colunasTouched) return;
+  const tipo = document.getElementById('fTipo').value;
+  if(tipo === 'dic') return; // DIC sempre foi livre, não mexe
+  const n = parseTratamentos(document.getElementById('fTratamentos').value).length;
+  if(n > 0) document.getElementById('fColunas').value = n;
+}
+
 function currentEnsaio(){ return state.ensaios[state.atualId]; }
+
+function listaAvaliacoes(e){
+  if(Array.isArray(e.avaliacoes) && e.avaliacoes.length) return e.avaliacoes;
+  return [{ numero: 1, data: null, nome: 'Avaliação 1' }];
+}
+
+function renderAvalTabs(e, containerId){
+  containerId = containerId || 'avalTabs';
+  const tabsEl = document.getElementById(containerId);
+  if(!tabsEl) return;
+  const avals = listaAvaliacoes(e);
+  if(!avals.find(a=>a.numero === state.avaliacaoAtual)) state.avaliacaoAtual = avals[0].numero;
+  tabsEl.innerHTML = '';
+  if(avals.length <= 1 && !avals[0].data){ return; } // não mostra abas se só tem 1 avaliação sem data
+  avals.forEach(a=>{
+    const btn = document.createElement('button');
+    btn.className = 'tab' + (a.numero === state.avaliacaoAtual ? ' active' : '');
+    const link = calendarLink(e.nome, a);
+    btn.innerHTML = `<span>V${a.numero}${a.data ? ' · ' + formatarDataBr(a.data) : ''}</span>` +
+      (link ? `<a class="avalLink" href="${link}" target="_blank" title="Adicionar ao Google Agenda" onclick="event.stopPropagation()">📅</a>` : '');
+    btn.addEventListener('click', ()=>{
+      state.avaliacaoAtual = a.numero;
+      if(state.view === 'croqui') renderCroqui();
+      else if(state.view === 'galeria') renderGaleria();
+      else if(state.view === 'relatorio') renderRelatorio();
+    });
+    tabsEl.appendChild(btn);
+  });
+}
 
 function renderCroqui(){
   const e = currentEnsaio();
@@ -508,7 +624,10 @@ function renderCroqui(){
   document.getElementById('croquiInfo').textContent =
     `${e.tratamentos.length} tratamentos × ${e.repeticoes} repetições — ${tipoLabel} — ${e.plots.length} parcelas`;
 
-  const cols = e.tipo === 'dic' ? e.colunas : e.tratamentos.length;
+  renderAvalTabs(e);
+  const numAval = state.avaliacaoAtual;
+
+  const cols = e.colunas || e.tratamentos.length;
   const grid = document.getElementById('croquiGrid');
   grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   grid.innerHTML = '';
@@ -517,6 +636,7 @@ function renderCroqui(){
   document.getElementById('btnEditar').textContent = state.editMode ? '✅ Concluir edição' : '✏️ Ativar edição manual';
 
   e.plots.forEach(p=>{
+    const av = avaliacaoDoPlot(p, numAval);
     const div = document.createElement('div');
     div.className = 'plot';
     div.style.background = colorFor(p.tratamento, e.tratamentos);
@@ -529,12 +649,12 @@ function renderCroqui(){
       inner += `<div class="trt">${p.tratamento}</div>`;
     }
     inner += `<div class="photoRow">`;
-    if(p.foto){
-      inner += `<img class="thumb" data-plot="${p.id}" src="${p.foto}">`;
+    if(av.foto){
+      inner += `<img class="thumb" data-plot="${p.id}" src="${av.foto}">`;
     }
     inner += `<button class="camBtn no-print" data-plot="${p.id}">📷</button>`;
     inner += `</div>`;
-    inner += `<input type="text" class="obsInput" data-plot="${p.id}" placeholder="${escapeAttr(e.obsLabel || 'Observação')}" value="${escapeAttr(p.observacao)}">`;
+    inner += `<input type="text" class="obsInput" data-plot="${p.id}" placeholder="${escapeAttr(e.obsLabel || 'Observação')}" value="${escapeAttr(av.observacao)}">`;
     div.innerHTML = inner;
     grid.appendChild(div);
   });
@@ -573,12 +693,13 @@ function renderCroqui(){
     inp.addEventListener('input', ()=>{
       const plotId = parseInt(inp.dataset.plot);
       const plot = e.plots.find(pp=>pp.id===plotId);
-      if(plot) plot.observacao = inp.value;
+      if(plot) avaliacaoDoPlot(plot, numAval).observacao = inp.value;
     });
     inp.addEventListener('blur', ()=>{
       state.suppressRender = false;
       const plotId = parseInt(inp.dataset.plot);
-      db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(plotId)).update({observacao: inp.value})
+      db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(plotId))
+        .update({ [`avaliacoes.${numAval}.observacao`]: inp.value })
         .catch(err=> console.error('Erro ao salvar observação:', err));
     });
   });
@@ -598,13 +719,18 @@ function renderGaleria(){
   if(!e) return;
   document.getElementById('galeriaTitulo').textContent = e.nome;
   document.getElementById('galeriaObsHeader').textContent = e.obsLabel || 'Observação';
+  renderAvalTabs(e, 'avalTabsGaleria');
+  const numAval = state.avaliacaoAtual;
+  const labelEl = document.getElementById('galeriaAvalLabel');
+  if(labelEl) labelEl.textContent = listaAvaliacoes(e).length > 1 ? `— Avaliação ${numAval}` : '';
   const tbody = document.querySelector('#galeriaTable tbody');
   tbody.innerHTML = '';
   e.plots.forEach(p=>{
+    const av = avaliacaoDoPlot(p, numAval);
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>#${p.id}</td><td>${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
-      `<td>${p.foto ? `<img src="${p.foto}" data-src="${p.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
-      `<td>${p.observacao ? escapeAttr(p.observacao) : '<span class="muted">—</span>'}</td>`;
+      `<td>${av.foto ? `<img src="${av.foto}" data-src="${av.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
+      `<td>${av.observacao ? escapeAttr(av.observacao) : '<span class="muted">—</span>'}</td>`;
     tbody.appendChild(tr);
   });
   tbody.querySelectorAll('img').forEach(img=>{
@@ -618,23 +744,29 @@ function renderRelatorio(){
   if(!e) return;
   document.getElementById('relatorioTitulo').textContent = e.nome;
   const tipoLabel = {dic:'Inteiramente casualizado', dbc:'Blocos casualizados', escada:'Casualizado com deslocamento (escada)', manual:'Manual'}[e.tipo];
-  const cols = e.tipo === 'dic' ? e.colunas : e.tratamentos.length;
-  const totalFotos = e.plots.filter(p=>p.foto).length;
+  const cols = e.colunas || e.tratamentos.length;
+  renderAvalTabs(e, 'avalTabsRelatorio');
+  const numAval = state.avaliacaoAtual;
+  const labelEl = document.getElementById('relatorioAvalLabel');
+  if(labelEl) labelEl.textContent = listaAvaliacoes(e).length > 1 ? `— Avaliação ${numAval}` : '';
+  const totalFotos = e.plots.filter(p=> avaliacaoDoPlot(p, numAval).foto).length;
 
   let html = `<div class="muted" style="margin-bottom:16px; line-height:1.6;">
     Gerado em ${new Date().toLocaleString('pt-BR')}<br>
     ${e.tratamentos.length} tratamentos × ${e.repeticoes} repetições — ${tipoLabel} — ${e.plots.length} parcelas<br>
+    ${listaAvaliacoes(e).length > 1 ? `Avaliação ${numAval}<br>` : ''}
     Fotos: ${totalFotos}/${e.plots.length} anexadas
   </div>`;
 
   html += `<h3 style="margin:0 0 8px 0;">Croqui de campo</h3>`;
   html += `<div class="grid" style="grid-template-columns:repeat(${cols}, 1fr); margin-bottom:22px;">`;
   e.plots.forEach(p=>{
+    const av = avaliacaoDoPlot(p, numAval);
     html += `<div class="plot" style="background:${colorFor(p.tratamento, e.tratamentos)};">
       <div class="num">#${p.id}${p.bloco ? ' · Bloco '+p.bloco : ''}</div>
       <div class="trt">${p.tratamento}</div>
-      ${p.foto ? `<img src="${p.foto}" style="width:100%; height:36px; object-fit:cover; border-radius:4px; margin-top:2px;">` : ''}
-      ${p.observacao ? `<div style="font-size:9.5px; margin-top:2px;">${escapeAttr(p.observacao)}</div>` : ''}
+      ${av.foto ? `<img src="${av.foto}" style="width:100%; height:36px; object-fit:cover; border-radius:4px; margin-top:2px;">` : ''}
+      ${av.observacao ? `<div style="font-size:9.5px; margin-top:2px;">${escapeAttr(av.observacao)}</div>` : ''}
     </div>`;
   });
   html += `</div>`;
@@ -643,9 +775,10 @@ function renderRelatorio(){
   html += `<h3 style="margin:0 0 8px 0;">Tratamento + Foto</h3>`;
   html += `<table><colgroup><col style="width:7%"><col style="width:9%"><col style="width:19%"><col style="width:40%"><col style="width:25%"></colgroup><thead><tr><th>Parcela</th><th>Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th>${obsLabel}</th></tr></thead><tbody>`;
   e.plots.forEach(p=>{
+    const av = avaliacaoDoPlot(p, numAval);
     html += `<tr><td>#${p.id}</td><td>${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
-      `<td>${p.foto ? `<img src="${p.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
-      `<td>${p.observacao ? escapeAttr(p.observacao) : '<span class="muted">—</span>'}</td></tr>`;
+      `<td>${av.foto ? `<img src="${av.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
+      `<td>${av.observacao ? escapeAttr(av.observacao) : '<span class="muted">—</span>'}</td></tr>`;
   });
   html += `</tbody></table>`;
 
@@ -726,27 +859,36 @@ async function importEnsaioFile(file){
     try{
       const id = db.collection('ensaios').doc().id;
       const batch = db.batch();
-      batch.set(db.collection('ensaios').doc(id), {
+      const ensaioData = {
         nome: imported.nome,
         tratamentos: imported.tratamentos,
         repeticoes: imported.repeticoes || 1,
         tipo: imported.tipo || 'dbc',
         colunas: imported.colunas || imported.tratamentos.length,
+        linhas: imported.linhas || null,
         obsLabel: imported.obsLabel || 'Observação',
         criadoPor: state.currentUser.email,
         criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
         atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
-      });
+      };
+      if(Array.isArray(imported.avaliacoes) && imported.avaliacoes.length){
+        ensaioData.avaliacoes = imported.avaliacoes;
+      }
+      batch.set(db.collection('ensaios').doc(id), ensaioData);
       imported.plots.forEach(p=>{
-        batch.set(db.collection('ensaios').doc(id).collection('parcelas').doc(String(p.id)), {
+        const plotData = {
           id: p.id,
           linha: p.linha || null,
           coluna: p.coluna || null,
           bloco: p.bloco || null,
-          tratamento: p.tratamento,
-          foto: p.foto || null,
-          observacao: p.observacao || ''
-        });
+          tratamento: p.tratamento
+        };
+        if(p.avaliacoes && typeof p.avaliacoes === 'object'){
+          plotData.avaliacoes = p.avaliacoes;
+        } else {
+          plotData.avaliacoes = { 1: { foto: p.foto || null, observacao: p.observacao || '' } };
+        }
+        batch.set(db.collection('ensaios').doc(id).collection('parcelas').doc(String(p.id)), plotData);
       });
       await batch.commit();
       alert('Ensaio importado com sucesso.');
@@ -776,8 +918,14 @@ function compressImage(file, cb){
 }
 
 // ---------- events ----------
-document.getElementById('fTipo').addEventListener('change', updateTipoUI);
+document.getElementById('fTipo').addEventListener('change', ()=>{ updateTipoUI(); sugerirColunas(); });
+document.getElementById('fTratamentos').addEventListener('input', sugerirColunas);
+document.getElementById('fColunas').addEventListener('input', ()=>{ state.colunasTouched = true; });
 document.getElementById('btnNovo').addEventListener('click', novoEnsaio);
+document.getElementById('fNumAvaliacoes').addEventListener('input', ()=>{
+  const e = currentEnsaio();
+  renderAvaliacoesDatas(e ? listaAvaliacoes(e) : null);
+});
 
 document.getElementById('btnGerar').addEventListener('click', async ()=>{
   const nome = document.getElementById('fNome').value.trim() || 'Ensaio sem nome';
@@ -785,25 +933,37 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
   const reps = parseInt(document.getElementById('fReps').value) || 1;
   const tipo = document.getElementById('fTipo').value;
   const colunas = parseInt(document.getElementById('fColunas').value) || tratamentos.length || 1;
+  const linhasInput = parseInt(document.getElementById('fLinhas').value) || 0;
   const obsLabel = document.getElementById('fObsLabel').value.trim() || 'Observação';
+  const numAvaliacoes = Math.max(1, parseInt(document.getElementById('fNumAvaliacoes').value) || 1);
+  const avaliacoesSchedule = [];
+  document.querySelectorAll('.avalDataInput').forEach(inp=>{
+    avaliacoesSchedule.push({ numero: parseInt(inp.dataset.num), data: inp.value || null });
+  });
 
   if(tratamentos.length < 2){ alert('Informe pelo menos 2 tratamentos.'); return; }
 
+  const totalParcelas = tratamentos.length * reps;
+  if(linhasInput && (linhasInput * colunas) !== totalParcelas){
+    if(!confirm(`${linhasInput} linhas × ${colunas} colunas = ${linhasInput*colunas}, mas o ensaio tem ${totalParcelas} parcelas. A última linha do croqui vai ficar incompleta. Continuar mesmo assim?`)) return;
+  }
+  const linhas = linhasInput || Math.ceil(totalParcelas / colunas);
+
   const editingExisting = state.atualId && state.ensaios[state.atualId];
   const oldPlots = editingExisting ? state.ensaios[state.atualId].plots : null;
-  const plots = gerarPlots(tratamentos, reps, tipo, colunas);
+  const plots = gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes);
 
   if(oldPlots && oldPlots.length){
     if(!confirm('Você já tinha um croqui gerado para este ensaio. Ao gerar de novo, fotos e observações são mantidas por posição de parcela (#1, #2...). Continuar?')) return;
     plots.forEach((p,i)=>{
       const old = oldPlots[i];
-      if(old){ p.foto = old.foto || null; p.observacao = old.observacao || ''; }
+      if(old){ normalizarPlot(old); p.avaliacoes = old.avaliacoes; }
     });
   }
 
   const id = editingExisting ? state.atualId : db.collection('ensaios').doc().id;
   const ensaioData = {
-    nome, tratamentos, repeticoes: reps, tipo, colunas, obsLabel,
+    nome, tratamentos, repeticoes: reps, tipo, colunas, linhas, obsLabel, avaliacoes: avaliacoesSchedule,
     criadoPor: editingExisting ? state.ensaios[id].criadoPor : state.currentUser.email,
     criadoEm: editingExisting ? (state.ensaios[id].criadoEm || firebase.firestore.FieldValue.serverTimestamp()) : firebase.firestore.FieldValue.serverTimestamp(),
     atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
@@ -829,6 +989,7 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
   state.ensaios[id] = { id, ...ensaioData, plots };
   state.atualId = id;
   state.editMode = tipo === 'manual';
+  state.avaliacaoAtual = 1;
   showView('croqui');
   listenParcelas(id);
   renderCroqui();
@@ -838,10 +999,10 @@ document.getElementById('btnRerandom').addEventListener('click', async ()=>{
   const e = currentEnsaio();
   if(!e) return;
   if(!confirm('Isso vai gerar uma nova randomização e manter as fotos/observações já registradas por posição de parcela. Continuar?')) return;
-  const fotos = e.plots.map(p=>p.foto);
-  const obs = e.plots.map(p=>p.observacao);
-  const novosPlots = gerarPlots(e.tratamentos, e.repeticoes, e.tipo, e.colunas);
-  novosPlots.forEach((p,i)=>{ p.foto = fotos[i] || null; p.observacao = obs[i] || ''; });
+  const avaliacoesAntigas = e.plots.map(p=>{ normalizarPlot(p); return p.avaliacoes; });
+  const numAval = listaAvaliacoes(e).length || 1;
+  const novosPlots = gerarPlots(e.tratamentos, e.repeticoes, e.tipo, e.colunas, numAval);
+  novosPlots.forEach((p,i)=>{ p.avaliacoes = avaliacoesAntigas[i] || criarAvaliacoesVazias(numAval); });
   try{
     const batch = db.batch();
     novosPlots.forEach(p=> batch.set(db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(p.id)), p));
@@ -881,7 +1042,12 @@ document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
     document.getElementById('fReps').value = e.repeticoes;
     document.getElementById('fTipo').value = e.tipo;
     document.getElementById('fColunas').value = e.colunas;
+    document.getElementById('fLinhas').value = e.linhas || '';
+    state.colunasTouched = true;
     document.getElementById('fObsLabel').value = e.obsLabel || 'Observação';
+    const avals = listaAvaliacoes(e);
+    document.getElementById('fNumAvaliacoes').value = avals.length;
+    renderAvaliacoesDatas(avals);
     updateTipoUI();
   }
   showView('setup');
@@ -900,9 +1066,11 @@ document.getElementById('fileInput').addEventListener('change', (ev)=>{
   compressImage(file, (dataUrl)=>{
     const e = currentEnsaio();
     const plot = e.plots.find(p=>p.id === state.pendingPlotId);
-    if(plot) plot.foto = dataUrl;
+    const numAval = state.avaliacaoAtual;
+    if(plot) avaliacaoDoPlot(plot, numAval).foto = dataUrl;
     renderCroqui();
-    db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(state.pendingPlotId)).update({foto: dataUrl})
+    db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(state.pendingPlotId))
+      .update({ [`avaliacoes.${numAval}.foto`]: dataUrl })
       .catch(err=>{
         console.error('Erro ao salvar foto:', err);
         alert('Não foi possível salvar a foto agora. Ela será reenviada quando a conexão voltar.');
