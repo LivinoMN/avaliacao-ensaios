@@ -61,15 +61,17 @@
   .plot .num{font-size:10px; color:#555; font-weight:600;}
   .plot .trt{font-size:12.5px; font-weight:700; margin:2px 0;}
   .plot select{font-size:11px; padding:3px 4px; margin-top:2px;}
+  .plot .obsInput{font-size:10.5px; padding:2px 4px; margin-top:2px; width:100%; border:1px solid #d3d1c8; border-radius:4px;}
+  @media print{ .plot .obsInput{border:none; padding:0; background:transparent;} }
   .plot .photoRow{display:flex; justify-content:center; align-items:center; gap:4px; margin-top:2px;}
   .plot .camBtn{
     background:#fff; border:1px solid #b8b5aa; border-radius:5px; font-size:10.5px; padding:2px 6px; cursor:pointer;
   }
   .plot .thumb{width:26px; height:26px; object-fit:cover; border-radius:4px; border:1px solid #b8b5aa; cursor:pointer;}
-  table{width:100%; border-collapse:collapse; font-size:13px;}
-  th, td{border:1px solid #e3e2dc; padding:6px 8px; text-align:left;}
+  table{width:100%; border-collapse:collapse; font-size:13px; table-layout:fixed;}
+  th, td{border:1px solid #e3e2dc; padding:6px 8px; text-align:left; overflow-wrap:break-word;}
   th{background:#f0efe9;}
-  td img{width:64px; height:64px; object-fit:cover; border-radius:6px; cursor:pointer;}
+  td img{width:100%; max-width:280px; height:170px; object-fit:cover; border-radius:6px; cursor:pointer; display:block;}
   .legend{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;}
   .legend span{display:inline-flex; align-items:center; gap:5px; font-size:12px;}
   .legend i{width:12px; height:12px; border-radius:3px; display:inline-block;}
@@ -149,6 +151,11 @@
       <input type="number" id="fColunas" min="1" value="4">
     </div>
   </div>
+  <div class="field">
+    <label>Nome do campo de observação (opcional)</label>
+    <input type="text" id="fObsLabel" placeholder="Observação" value="Observação">
+    <div class="hint">Vira um campo de texto livre em cada parcela. Renomeie se quiser, ex: "Estádio fenológico", "Nota de dano".</div>
+  </div>
   <div class="note" id="tipoNote"></div>
   <button class="btn" id="btnGerar">Gerar croqui</button>
 </div>
@@ -183,7 +190,10 @@
     </div>
   </div>
   <table id="galeriaTable">
-    <thead><tr><th>Parcela</th><th>Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th class="no-print">Drive</th></tr></thead>
+    <colgroup>
+      <col style="width:6%"><col style="width:8%"><col style="width:18%"><col style="width:40%"><col style="width:21%"><col style="width:7%">
+    </colgroup>
+    <thead><tr><th>Parcela</th><th>Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th id="galeriaObsHeader">Observação</th><th class="no-print">Drive</th></tr></thead>
     <tbody></tbody>
   </table>
 </div>
@@ -334,7 +344,7 @@ function gerarPlots(tratamentos, reps, tipo, colunas){
     pool = shuffle(pool);
     const cols = Math.max(1, colunas);
     pool.forEach((t,i)=>{
-      plots.push({id:idx++, linha:Math.floor(i/cols)+1, coluna:(i%cols)+1, bloco:null, tratamento:t, foto:null});
+      plots.push({id:idx++, linha:Math.floor(i/cols)+1, coluna:(i%cols)+1, bloco:null, tratamento:t, foto:null, observacao:''});
     });
   } else if(tipo === 'escada'){
     const base = shuffle(tratamentos);
@@ -342,16 +352,20 @@ function gerarPlots(tratamentos, reps, tipo, colunas){
     for(let b=1;b<=reps;b++){
       const shift = (b-1) % cols;
       const ordem = base.slice(shift).concat(base.slice(0,shift));
-      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, foto:null}); });
+      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, foto:null, observacao:''}); });
     }
   } else { // dbc or manual (manual starts from dbc suggestion)
     const cols = tratamentos.length;
     for(let b=1;b<=reps;b++){
       const ordem = shuffle(tratamentos);
-      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, foto:null}); });
+      ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, foto:null, observacao:''}); });
     }
   }
   return plots;
+}
+
+function escapeAttr(s){
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function colorFor(t){
@@ -406,6 +420,7 @@ function novoEnsaio(){
   document.getElementById('fReps').value = 4;
   document.getElementById('fTipo').value = 'dbc';
   document.getElementById('fColunas').value = 4;
+  document.getElementById('fObsLabel').value = 'Observação';
   updateTipoUI();
   showView('setup');
 }
@@ -479,6 +494,7 @@ function renderCroqui(){
       }
     }
     inner += `</div>`;
+    inner += `<input type="text" class="obsInput" data-plot="${p.id}" placeholder="${escapeAttr(e.obsLabel || 'Observação')}" value="${escapeAttr(p.observacao)}">`;
     div.innerHTML = inner;
     grid.appendChild(div);
   });
@@ -518,6 +534,14 @@ function renderCroqui(){
       uploadPhotoToDrive(e, plot);
     });
   });
+  grid.querySelectorAll('.obsInput').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      const plotId = parseInt(inp.dataset.plot);
+      const plot = e.plots.find(pp=>pp.id===plotId);
+      plot.observacao = inp.value;
+    });
+    inp.addEventListener('blur', ()=> saveStorage());
+  });
 }
 
 function showPhotoModal(src){
@@ -533,6 +557,7 @@ function renderGaleria(){
   const e = currentEnsaio();
   if(!e) return;
   document.getElementById('galeriaTitulo').textContent = e.nome;
+  document.getElementById('galeriaObsHeader').textContent = e.obsLabel || 'Observação';
   const tbody = document.querySelector('#galeriaTable tbody');
   tbody.innerHTML = '';
   e.plots.forEach(p=>{
@@ -545,6 +570,7 @@ function renderGaleria(){
     }
     tr.innerHTML = `<td>#${p.id}</td><td>${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
       `<td>${p.foto ? `<img src="${p.foto}" data-src="${p.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
+      `<td>${p.observacao ? escapeAttr(p.observacao) : '<span class="muted">—</span>'}</td>` +
       `<td class="no-print">${driveCell}</td>`;
     tbody.appendChild(tr);
   });
@@ -576,15 +602,18 @@ function renderRelatorio(){
       <div class="num">#${p.id}${p.bloco ? ' · Bloco '+p.bloco : ''}</div>
       <div class="trt">${p.tratamento}</div>
       ${p.foto ? `<img src="${p.foto}" style="width:100%; height:36px; object-fit:cover; border-radius:4px; margin-top:2px;">` : ''}
+      ${p.observacao ? `<div style="font-size:9.5px; margin-top:2px;">${escapeAttr(p.observacao)}</div>` : ''}
     </div>`;
   });
   html += `</div>`;
 
+  const obsLabel = e.obsLabel || 'Observação';
   html += `<h3 style="margin:0 0 8px 0;">Tratamento + Foto</h3>`;
-  html += `<table><thead><tr><th>Parcela</th><th>Bloco/Rep</th><th>Tratamento</th><th>Foto</th></tr></thead><tbody>`;
+  html += `<table><colgroup><col style="width:7%"><col style="width:9%"><col style="width:19%"><col style="width:40%"><col style="width:25%"></colgroup><thead><tr><th>Parcela</th><th>Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th>${obsLabel}</th></tr></thead><tbody>`;
   e.plots.forEach(p=>{
     html += `<tr><td>#${p.id}</td><td>${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
-      `<td>${p.foto ? `<img src="${p.foto}">` : '<span class="muted">sem foto</span>'}</td></tr>`;
+      `<td>${p.foto ? `<img src="${p.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
+      `<td>${p.observacao ? escapeAttr(p.observacao) : '<span class="muted">—</span>'}</td></tr>`;
   });
   html += `</tbody></table>`;
 
@@ -641,10 +670,12 @@ function importEnsaioFile(file){
         let preenchidas = 0;
         imported.plots.forEach(ip=>{
           const ep = existing.plots.find(p=>p.id === ip.id);
-          if(ep && !ep.foto && ip.foto){
+          if(!ep) return;
+          if(!ep.foto && ip.foto){
             ep.foto = ip.foto; ep.driveStatus = null; ep.driveFileId = null; ep.driveViewUrl = null;
             preenchidas++;
           }
+          if(!ep.observacao && ip.observacao){ ep.observacao = ip.observacao; }
         });
         saveStorage();
         targetId = existingId;
@@ -690,12 +721,28 @@ document.getElementById('btnGerar').addEventListener('click', ()=>{
   const reps = parseInt(document.getElementById('fReps').value) || 1;
   const tipo = document.getElementById('fTipo').value;
   const colunas = parseInt(document.getElementById('fColunas').value) || tratamentos.length || 1;
+  const obsLabel = document.getElementById('fObsLabel').value.trim() || 'Observação';
 
   if(tratamentos.length < 2){ alert('Informe pelo menos 2 tratamentos.'); return; }
 
-  const id = state.atualId && state.ensaios[state.atualId] ? state.atualId : uid();
+  const editingExisting = state.atualId && state.ensaios[state.atualId];
+  const oldPlots = editingExisting ? state.ensaios[state.atualId].plots : null;
+  const oldDriveFolderId = editingExisting ? state.ensaios[state.atualId].driveFolderId : null;
+  const id = editingExisting ? state.atualId : uid();
   const plots = gerarPlots(tratamentos, reps, tipo, colunas);
-  state.ensaios[id] = { id, nome, tratamentos, repeticoes: reps, tipo, colunas, plots, criadoEm: Date.now() };
+
+  if(oldPlots){
+    if(!confirm('Você já tinha um croqui gerado para este ensaio. Ao gerar de novo, fotos e observações são mantidas por posição de parcela (#1, #2...), mas o link de cada parcela com o Drive será refeito. Continuar?')) return;
+    plots.forEach((p,i)=>{
+      const old = oldPlots[i];
+      if(old){
+        p.foto = old.foto || null;
+        p.observacao = old.observacao || '';
+      }
+    });
+  }
+
+  state.ensaios[id] = { id, nome, tratamentos, repeticoes: reps, tipo, colunas, obsLabel, plots, driveFolderId: oldDriveFolderId || null, criadoEm: editingExisting ? state.ensaios[id].criadoEm : Date.now() };
   state.atualId = id;
   state.editMode = tipo === 'manual';
   saveStorage();
@@ -709,9 +756,11 @@ document.getElementById('btnRerandom').addEventListener('click', ()=>{
   if(!e) return;
   if(!confirm('Isso vai gerar uma nova randomização e manter as fotos já vinculadas por posição de parcela. Continuar?')) return;
   const fotos = e.plots.map(p=>p.foto);
+  const obs = e.plots.map(p=>p.observacao);
   e.plots = gerarPlots(e.tratamentos, e.repeticoes, e.tipo, e.colunas);
   e.plots.forEach((p,i)=>{
     p.foto = fotos[i] || null;
+    p.observacao = obs[i] || '';
     // tratamento pode ter mudado de posição: força reenvio ao Drive com o nome correto
     p.driveStatus = null; p.driveFileId = null; p.driveViewUrl = null;
   });
@@ -750,6 +799,7 @@ document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
     document.getElementById('fReps').value = e.repeticoes;
     document.getElementById('fTipo').value = e.tipo;
     document.getElementById('fColunas').value = e.colunas;
+    document.getElementById('fObsLabel').value = e.obsLabel || 'Observação';
     updateTipoUI();
   }
   showView('setup');
