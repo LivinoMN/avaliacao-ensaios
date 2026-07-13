@@ -42,13 +42,10 @@
   .row > div{flex:1; min-width:180px;}
   .field{margin-bottom:12px;}
   .hint{font-size:11.5px; color:#7c8177; margin-top:3px;}
-  .savedList{display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;}
-  .savedChip{
-    display:flex; align-items:center; gap:6px; background:#eef1ea; border:1px solid #d6dccb;
-    border-radius:20px; padding:4px 10px 4px 12px; font-size:12.5px; cursor:pointer;
-  }
-  .savedChip:hover{background:#e2e7d9;}
-  .savedChip .x{color:#a04; font-weight:700; padding:0 3px;}
+  #listaEnsaiosTable tbody tr{cursor:pointer;}
+  #listaEnsaiosTable tbody tr:hover{background:#f0efe9;}
+  #listaEnsaiosTable .btnExcluirEnsaio{color:#a04; border-color:#e0c4c4;}
+  #fBuscaEnsaio{max-width:320px; margin-bottom:14px;}
   .hidden{display:none !important;}
   .grid{display:grid; gap:8px;}
   .plot{
@@ -121,6 +118,7 @@
   <div class="no-print" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <span class="muted" id="userInfo"></span>
     <button class="btn secondary hidden" id="btnAdmin">👤 Gerenciar acessos</button>
+    <button class="btn secondary" id="btnEnsaios">📋 Ensaios</button>
     <button class="btn secondary" id="btnNovo">+ Novo ensaio</button>
     <button class="btn secondary" id="btnImportar">📥 Importar ensaio</button>
     <button class="btn secondary" id="btnPrint">🖨️ Imprimir vista atual</button>
@@ -130,13 +128,19 @@
 
 <input type="file" id="importInput" accept="application/json" style="display:none">
 
-<div class="card no-print" id="savedCard">
-  <h2 style="margin-bottom:6px;">Ensaios salvos (compartilhados com a equipe)</h2>
-  <div class="savedList" id="savedList"><span class="muted">Nenhum ensaio salvo ainda.</span></div>
+<!-- LISTA VIEW -->
+<div id="viewLista" class="card">
+  <h2 style="margin-bottom:10px;">Ensaios cadastrados</h2>
+  <input type="text" id="fBuscaEnsaio" placeholder="🔎 Buscar por nome...">
+  <table id="listaEnsaiosTable">
+    <colgroup><col style="width:34%"><col style="width:16%"><col style="width:20%"><col style="width:15%"><col style="width:15%"></colgroup>
+    <thead><tr><th>Nome</th><th>Tipo</th><th>Tratamentos × Reps</th><th>Criado por</th><th></th></tr></thead>
+    <tbody id="listaEnsaiosBody"></tbody>
+  </table>
 </div>
 
 <!-- SETUP VIEW -->
-<div id="viewSetup" class="card">
+<div id="viewSetup" class="card hidden">
   <h2>Configuração do ensaio</h2>
   <div class="field">
     <label>Nome do ensaio</label>
@@ -164,15 +168,22 @@
   </div>
   <div class="row">
     <div class="field" id="colWrap">
-      <label>Colunas do croqui</label>
-      <input type="number" id="fColunas" min="1" value="4">
+      <label id="lblColunas">Colunas do croqui (opcional)</label>
+      <input type="number" id="fColunas" min="1" placeholder="calculado automaticamente">
     </div>
     <div class="field" id="linWrap">
-      <label>Linhas do croqui (opcional)</label>
+      <label id="lblLinhas">Linhas do croqui (opcional)</label>
       <input type="number" id="fLinhas" min="1" placeholder="calculado automaticamente">
-      <div class="hint">Ajuste colunas/linhas conforme o espaço disponível no campo. Se não bater com o total de parcelas, a última linha fica incompleta.</div>
+    </div>
+    <div class="field">
+      <label>Distribuição dos blocos</label>
+      <select id="fOrientacao">
+        <option value="horizontal">Horizontal (blocos em linhas)</option>
+        <option value="vertical">Vertical (blocos em colunas)</option>
+      </select>
     </div>
   </div>
+  <div class="hint" style="margin:-6px 0 12px 0;">Ajuste conforme o espaço disponível no campo. Se o total não bater com o nº de parcelas, a última linha/coluna fica incompleta.</div>
   <div class="field">
     <label>Nome do campo de observação (opcional)</label>
     <input type="text" id="fObsLabel" placeholder="Observação" value="Observação">
@@ -292,6 +303,7 @@ let state = {
   view: 'setup',
   editMode: false,
   colunasTouched: false,
+  linhasTouched: false,
   pendingPlotId: null,
   currentUser: null,
   userRole: null,
@@ -414,6 +426,15 @@ function tsToMillis(ts){
   return (ts && typeof ts.toMillis === 'function') ? ts.toMillis() : 0;
 }
 
+function gridLayoutCSS(e){
+  if(e.orientacao === 'vertical'){
+    const linhasV = e.linhas || e.tratamentos.length;
+    return `grid-auto-flow:column; grid-template-rows:repeat(${linhasV}, auto); grid-auto-columns:1fr;`;
+  }
+  const cols = e.colunas || e.tratamentos.length;
+  return `grid-auto-flow:row; grid-template-columns:repeat(${cols}, 1fr);`;
+}
+
 // ---------- auth ----------
 function showScreen(s){
   document.getElementById('loginScreen').classList.toggle('hidden', s!=='login');
@@ -448,7 +469,7 @@ function checkAuthorization(user){
       document.getElementById('userInfo').textContent = `${user.displayName || email} · ${state.userRole === 'admin' ? 'admin' : 'colaborador'}`;
       document.getElementById('btnAdmin').classList.toggle('hidden', state.userRole !== 'admin');
       showScreen('app');
-      novoEnsaio();
+      mostrarLista();
       startEnsaiosListener();
     } else {
       document.getElementById('unauthEmail').textContent = email;
@@ -470,7 +491,7 @@ function startEnsaiosListener(){
       const existingPlots = state.ensaios[id] ? state.ensaios[id].plots : [];
       state.ensaios[id] = { id, ...data, plots: existingPlots };
     });
-    renderSaved();
+    if(state.view === 'lista') renderListaEnsaios();
   }, err=> console.error('Erro ao ouvir ensaios:', err));
 }
 
@@ -496,37 +517,55 @@ async function deleteEnsaio(id){
     parcelasSnap.forEach(d=> batch.delete(d.ref));
     batch.delete(db.collection('ensaios').doc(id));
     await batch.commit();
-    if(state.atualId === id) novoEnsaio();
+    if(state.atualId === id) mostrarLista();
   }catch(err){ alert('Erro ao excluir: ' + err.message); }
 }
 
 // ---------- rendering ----------
-function renderSaved(){
-  const wrap = document.getElementById('savedList');
-  const ids = Object.keys(state.ensaios);
-  if(ids.length === 0){ wrap.innerHTML = '<span class="muted">Nenhum ensaio salvo ainda.</span>'; return; }
-  wrap.innerHTML = '';
+function mostrarLista(){
+  if(state.unsubParcelas){ state.unsubParcelas(); state.unsubParcelas = null; }
+  state.atualId = null;
+  showView('lista');
+  renderListaEnsaios();
+}
+
+function renderListaEnsaios(){
+  const wrap = document.getElementById('listaEnsaiosBody');
+  if(!wrap) return;
+  const termo = (document.getElementById('fBuscaEnsaio').value || '').trim().toLowerCase();
+  const tipoLabel = {dic:'DIC', dbc:'DBC', escada:'Escada', manual:'Manual'};
+  let ids = Object.keys(state.ensaios);
+  if(termo) ids = ids.filter(id=> (state.ensaios[id].nome || '').toLowerCase().includes(termo));
+  if(ids.length === 0){
+    wrap.innerHTML = `<tr><td colspan="5" class="muted">${Object.keys(state.ensaios).length === 0 ? 'Nenhum ensaio cadastrado ainda.' : 'Nenhum ensaio encontrado para essa busca.'}</td></tr>`;
+    return;
+  }
   ids.sort((a,b)=> tsToMillis(state.ensaios[b].criadoEm) - tsToMillis(state.ensaios[a].criadoEm));
+  wrap.innerHTML = '';
   ids.forEach(id=>{
     const e = state.ensaios[id];
-    const chip = document.createElement('div');
-    chip.className = 'savedChip';
     const podeExcluir = state.userRole === 'admin' || e.criadoPor === (state.currentUser && state.currentUser.email);
-    chip.innerHTML = `<span>${e.nome || '(sem nome)'}</span>` + (podeExcluir ? `<span class="x" data-id="${id}">✕</span>` : '');
-    chip.addEventListener('click', (ev)=>{
-      if(ev.target.classList.contains('x')) return;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${e.nome || '(sem nome)'}</td>` +
+      `<td>${tipoLabel[e.tipo] || e.tipo || '-'}</td>` +
+      `<td>${e.tratamentos ? e.tratamentos.length : '-'} × ${e.repeticoes || '-'}</td>` +
+      `<td>${e.criadoPor || '—'}</td>` +
+      `<td>${podeExcluir ? `<button class="btn secondary btnExcluirEnsaio" data-id="${id}">✕ Excluir</button>` : ''}</td>`;
+    tr.addEventListener('click', (ev)=>{
+      if(ev.target.closest('.btnExcluirEnsaio')) return;
       abrirEnsaio(id);
     });
-    const xEl = chip.querySelector('.x');
-    if(xEl){
-      xEl.addEventListener('click', (ev)=>{
-        ev.stopPropagation();
-        if(confirm(`Excluir o ensaio "${e.nome}"? Isso apaga todas as parcelas e fotos dele para todo mundo.`)){
-          deleteEnsaio(id);
-        }
-      });
-    }
-    wrap.appendChild(chip);
+    wrap.appendChild(tr);
+  });
+  wrap.querySelectorAll('.btnExcluirEnsaio').forEach(btn=>{
+    btn.addEventListener('click', (ev)=>{
+      ev.stopPropagation();
+      const id = btn.dataset.id;
+      const e = state.ensaios[id];
+      if(confirm(`Excluir o ensaio "${e.nome}"? Isso apaga todas as parcelas e fotos dele para todo mundo.`)){
+        deleteEnsaio(id);
+      }
+    });
   });
 }
 
@@ -545,12 +584,14 @@ function novoEnsaio(){
   state.atualId = null;
   state.editMode = false;
   state.colunasTouched = false;
+  state.linhasTouched = false;
   document.getElementById('fNome').value = '';
   document.getElementById('fTratamentos').value = '';
   document.getElementById('fReps').value = 4;
   document.getElementById('fTipo').value = 'dbc';
-  document.getElementById('fColunas').value = 4;
+  document.getElementById('fColunas').value = '';
   document.getElementById('fLinhas').value = '';
+  document.getElementById('fOrientacao').value = 'horizontal';
   document.getElementById('fObsLabel').value = 'Observação';
   document.getElementById('fNumAvaliacoes').value = 1;
   renderAvaliacoesDatas();
@@ -560,12 +601,12 @@ function novoEnsaio(){
 
 function showView(v){
   state.view = v;
+  document.getElementById('viewLista').classList.toggle('hidden', v!=='lista');
   document.getElementById('viewSetup').classList.toggle('hidden', v!=='setup');
   document.getElementById('viewCroqui').classList.toggle('hidden', v!=='croqui');
   document.getElementById('viewGaleria').classList.toggle('hidden', v!=='galeria');
   document.getElementById('viewRelatorio').classList.toggle('hidden', v!=='relatorio');
   document.getElementById('viewAdmin').classList.toggle('hidden', v!=='admin');
-  document.getElementById('savedCard').classList.toggle('hidden', v!=='setup');
 }
 
 function updateTipoUI(){
@@ -577,12 +618,17 @@ function parseTratamentos(raw){
   return raw.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
 }
 
-function sugerirColunas(){
-  if(state.colunasTouched) return;
+function sugerirGrade(){
   const tipo = document.getElementById('fTipo').value;
   if(tipo === 'dic') return; // DIC sempre foi livre, não mexe
+  const orient = document.getElementById('fOrientacao').value;
   const n = parseTratamentos(document.getElementById('fTratamentos').value).length;
-  if(n > 0) document.getElementById('fColunas').value = n;
+  if(n <= 0) return;
+  if(orient === 'vertical'){
+    if(!state.linhasTouched) document.getElementById('fLinhas').value = n;
+  } else {
+    if(!state.colunasTouched) document.getElementById('fColunas').value = n;
+  }
 }
 
 function currentEnsaio(){ return state.ensaios[state.atualId]; }
@@ -627,9 +673,8 @@ function renderCroqui(){
   renderAvalTabs(e);
   const numAval = state.avaliacaoAtual;
 
-  const cols = e.colunas || e.tratamentos.length;
   const grid = document.getElementById('croquiGrid');
-  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  grid.style.cssText = gridLayoutCSS(e);
   grid.innerHTML = '';
 
   document.getElementById('btnRerandom').classList.toggle('hidden', e.tipo === 'manual');
@@ -744,7 +789,6 @@ function renderRelatorio(){
   if(!e) return;
   document.getElementById('relatorioTitulo').textContent = e.nome;
   const tipoLabel = {dic:'Inteiramente casualizado', dbc:'Blocos casualizados', escada:'Casualizado com deslocamento (escada)', manual:'Manual'}[e.tipo];
-  const cols = e.colunas || e.tratamentos.length;
   renderAvalTabs(e, 'avalTabsRelatorio');
   const numAval = state.avaliacaoAtual;
   const labelEl = document.getElementById('relatorioAvalLabel');
@@ -759,7 +803,7 @@ function renderRelatorio(){
   </div>`;
 
   html += `<h3 style="margin:0 0 8px 0;">Croqui de campo</h3>`;
-  html += `<div class="grid" style="grid-template-columns:repeat(${cols}, 1fr); margin-bottom:22px;">`;
+  html += `<div class="grid" style="${gridLayoutCSS(e)} margin-bottom:22px;">`;
   e.plots.forEach(p=>{
     const av = avaliacaoDoPlot(p, numAval);
     html += `<div class="plot" style="background:${colorFor(p.tratamento, e.tratamentos)};">
@@ -826,7 +870,7 @@ document.getElementById('btnAdicionarAcesso').addEventListener('click', ()=>{
   }).catch(err=> alert('Erro: ' + err.message));
 });
 document.getElementById('btnAdmin').addEventListener('click', ()=>{ showView('admin'); renderAdmin(); });
-document.getElementById('btnVoltarAdmin').addEventListener('click', ()=>{ showView('setup'); });
+document.getElementById('btnVoltarAdmin').addEventListener('click', mostrarLista);
 
 // ---------- exportar / importar ensaio ----------
 function exportEnsaio(){
@@ -866,6 +910,7 @@ async function importEnsaioFile(file){
         tipo: imported.tipo || 'dbc',
         colunas: imported.colunas || imported.tratamentos.length,
         linhas: imported.linhas || null,
+        orientacao: imported.orientacao || 'horizontal',
         obsLabel: imported.obsLabel || 'Observação',
         criadoPor: state.currentUser.email,
         criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
@@ -918,10 +963,14 @@ function compressImage(file, cb){
 }
 
 // ---------- events ----------
-document.getElementById('fTipo').addEventListener('change', ()=>{ updateTipoUI(); sugerirColunas(); });
-document.getElementById('fTratamentos').addEventListener('input', sugerirColunas);
+document.getElementById('fTipo').addEventListener('change', ()=>{ updateTipoUI(); sugerirGrade(); });
+document.getElementById('fTratamentos').addEventListener('input', sugerirGrade);
+document.getElementById('fOrientacao').addEventListener('change', sugerirGrade);
 document.getElementById('fColunas').addEventListener('input', ()=>{ state.colunasTouched = true; });
+document.getElementById('fLinhas').addEventListener('input', ()=>{ state.linhasTouched = true; });
 document.getElementById('btnNovo').addEventListener('click', novoEnsaio);
+document.getElementById('btnEnsaios').addEventListener('click', mostrarLista);
+document.getElementById('fBuscaEnsaio').addEventListener('input', renderListaEnsaios);
 document.getElementById('fNumAvaliacoes').addEventListener('input', ()=>{
   const e = currentEnsaio();
   renderAvaliacoesDatas(e ? listaAvaliacoes(e) : null);
@@ -932,7 +981,8 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
   const tratamentos = parseTratamentos(document.getElementById('fTratamentos').value);
   const reps = parseInt(document.getElementById('fReps').value) || 1;
   const tipo = document.getElementById('fTipo').value;
-  const colunas = parseInt(document.getElementById('fColunas').value) || tratamentos.length || 1;
+  const orientacao = document.getElementById('fOrientacao').value;
+  const colunasInput = parseInt(document.getElementById('fColunas').value) || 0;
   const linhasInput = parseInt(document.getElementById('fLinhas').value) || 0;
   const obsLabel = document.getElementById('fObsLabel').value.trim() || 'Observação';
   const numAvaliacoes = Math.max(1, parseInt(document.getElementById('fNumAvaliacoes').value) || 1);
@@ -944,10 +994,20 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
   if(tratamentos.length < 2){ alert('Informe pelo menos 2 tratamentos.'); return; }
 
   const totalParcelas = tratamentos.length * reps;
-  if(linhasInput && (linhasInput * colunas) !== totalParcelas){
-    if(!confirm(`${linhasInput} linhas × ${colunas} colunas = ${linhasInput*colunas}, mas o ensaio tem ${totalParcelas} parcelas. A última linha do croqui vai ficar incompleta. Continuar mesmo assim?`)) return;
+  let colunas, linhas;
+  if(orientacao === 'vertical'){
+    linhas = linhasInput || tratamentos.length;
+    colunas = colunasInput || Math.ceil(totalParcelas / linhas);
+    if(colunasInput && (linhas * colunasInput) !== totalParcelas){
+      if(!confirm(`${linhas} linhas × ${colunasInput} colunas = ${linhas*colunasInput}, mas o ensaio tem ${totalParcelas} parcelas. A última coluna do croqui vai ficar incompleta. Continuar mesmo assim?`)) return;
+    }
+  } else {
+    colunas = colunasInput || tratamentos.length;
+    linhas = linhasInput || Math.ceil(totalParcelas / colunas);
+    if(linhasInput && (linhasInput * colunas) !== totalParcelas){
+      if(!confirm(`${linhasInput} linhas × ${colunas} colunas = ${linhasInput*colunas}, mas o ensaio tem ${totalParcelas} parcelas. A última linha do croqui vai ficar incompleta. Continuar mesmo assim?`)) return;
+    }
   }
-  const linhas = linhasInput || Math.ceil(totalParcelas / colunas);
 
   const editingExisting = state.atualId && state.ensaios[state.atualId];
   const oldPlots = editingExisting ? state.ensaios[state.atualId].plots : null;
@@ -963,7 +1023,7 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
 
   const id = editingExisting ? state.atualId : db.collection('ensaios').doc().id;
   const ensaioData = {
-    nome, tratamentos, repeticoes: reps, tipo, colunas, linhas, obsLabel, avaliacoes: avaliacoesSchedule,
+    nome, tratamentos, repeticoes: reps, tipo, colunas, linhas, orientacao, obsLabel, avaliacoes: avaliacoesSchedule,
     criadoPor: editingExisting ? state.ensaios[id].criadoPor : state.currentUser.email,
     criadoEm: editingExisting ? (state.ensaios[id].criadoEm || firebase.firestore.FieldValue.serverTimestamp()) : firebase.firestore.FieldValue.serverTimestamp(),
     atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
@@ -1043,7 +1103,9 @@ document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
     document.getElementById('fTipo').value = e.tipo;
     document.getElementById('fColunas').value = e.colunas;
     document.getElementById('fLinhas').value = e.linhas || '';
+    document.getElementById('fOrientacao').value = e.orientacao || 'horizontal';
     state.colunasTouched = true;
+    state.linhasTouched = true;
     document.getElementById('fObsLabel').value = e.obsLabel || 'Observação';
     const avals = listaAvaliacoes(e);
     document.getElementById('fNumAvaliacoes').value = avals.length;
