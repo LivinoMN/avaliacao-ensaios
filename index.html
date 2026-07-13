@@ -349,7 +349,7 @@ function gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes){
       plots.push({id:idx++, linha:Math.floor(i/cols)+1, coluna:(i%cols)+1, bloco:null, tratamento:t, avaliacoes: criarAvaliacoesVazias(n)});
     });
   } else if(tipo === 'escada'){
-    const base = shuffle(tratamentos);
+    const base = tratamentos.slice();
     const cols = base.length;
     for(let b=1;b<=reps;b++){
       const shift = (b-1) % cols;
