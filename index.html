@@ -353,7 +353,7 @@ function gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes){
     const cols = base.length;
     for(let b=1;b<=reps;b++){
       const shift = (b-1) % cols;
-      const ordem = base.slice(shift).concat(base.slice(0,shift));
+      const ordem = shift === 0 ? base.slice() : base.slice(cols-shift).concat(base.slice(0,cols-shift));
       ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, avaliacoes: criarAvaliacoesVazias(n)}); });
     }
   } else {
