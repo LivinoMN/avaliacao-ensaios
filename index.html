@@ -66,6 +66,16 @@
   th, td{border:1px solid #e3e2dc; padding:6px 8px; text-align:left; overflow-wrap:break-word;}
   th{background:#f0efe9;}
   td img{width:100%; max-width:280px; height:170px; object-fit:cover; border-radius:6px; cursor:pointer; display:block;}
+  th.vert, td.vert{
+    writing-mode: vertical-rl; text-orientation: mixed; white-space:nowrap;
+    text-align:center; vertical-align:middle; padding:6px 3px;
+  }
+  td.obsCell div{margin-bottom:4px; line-height:1.35;}
+  td.obsCell div:last-child{margin-bottom:0;}
+  td.obsCell b{font-weight:600;}
+  .obsLabelRow{display:flex; gap:6px; margin-bottom:6px; align-items:center;}
+  .obsLabelRow input{flex:1;}
+  .obsLabelRow .btnRemoverObsLabel{padding:6px 10px; flex:none;}
   .legend{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;}
   .legend span{display:inline-flex; align-items:center; gap:5px; font-size:12px;}
   .legend i{width:12px; height:12px; border-radius:3px; display:inline-block;}
@@ -185,9 +195,10 @@
   </div>
   <div class="hint" style="margin:-6px 0 12px 0;">Ajuste conforme o espaço disponível no campo. Se o total não bater com o nº de parcelas, a última linha/coluna fica incompleta.</div>
   <div class="field">
-    <label>Nome do campo de observação (opcional)</label>
-    <input type="text" id="fObsLabel" placeholder="Observação" value="Observação">
-    <div class="hint">Vira um campo de texto livre em cada parcela. Renomeie se quiser, ex: "Estádio fenológico", "Nota de dano".</div>
+    <label>Campos de observação</label>
+    <div id="obsLabelsWrap"></div>
+    <button type="button" class="btn secondary" id="btnAddObsLabel" style="margin-top:2px;">+ Adicionar campo</button>
+    <div class="hint">Cada campo vira uma caixa de texto separada em cada parcela. Ex: "Estádio fenológico", "Nota de dano", "Altura (cm)".</div>
   </div>
   <div class="field">
     <label>Quantas avaliações serão feitas?</label>
@@ -228,9 +239,9 @@
   <div class="tabs no-print" id="avalTabsGaleria"></div>
   <table id="galeriaTable">
     <colgroup>
-      <col style="width:7%"><col style="width:9%"><col style="width:20%"><col style="width:43%"><col style="width:21%">
+      <col style="width:4%"><col style="width:5%"><col style="width:21%"><col style="width:44%"><col style="width:26%">
     </colgroup>
-    <thead><tr><th>Parcela</th><th>Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th id="galeriaObsHeader">Observação</th></tr></thead>
+    <thead><tr><th class="vert">Parcela</th><th class="vert">Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th id="galeriaObsHeader">Observação</th></tr></thead>
     <tbody></tbody>
   </table>
 </div>
@@ -330,22 +341,53 @@ const TIPO_DESC = {
 
 function criarAvaliacoesVazias(n){
   const obj = {};
-  for(let i=1;i<=n;i++) obj[i] = { foto: null, observacao: '' };
+  for(let i=1;i<=n;i++) obj[i] = { foto: null, observacoes: {} };
   return obj;
 }
 
 // compatibilidade com ensaios antigos (uma foto/observação só, sem avaliações)
 function normalizarPlot(p){
   if(!p.avaliacoes || typeof p.avaliacoes !== 'object' || Array.isArray(p.avaliacoes)){
-    p.avaliacoes = { 1: { foto: p.foto || null, observacao: p.observacao || '' } };
+    p.avaliacoes = { 1: { foto: p.foto || null, observacoes: { 0: p.observacao || '' } } };
   }
   return p;
 }
 
 function avaliacaoDoPlot(p, num){
   normalizarPlot(p);
-  if(!p.avaliacoes[num]) p.avaliacoes[num] = { foto: null, observacao: '' };
-  return p.avaliacoes[num];
+  if(!p.avaliacoes[num]) p.avaliacoes[num] = { foto: null, observacoes: {} };
+  const av = p.avaliacoes[num];
+  // compatibilidade com avaliações antigas de campo único "observacao"
+  if(!av.observacoes || typeof av.observacoes !== 'object' || Array.isArray(av.observacoes)){
+    av.observacoes = { 0: av.observacao || '' };
+  }
+  return av;
+}
+
+// lista de campos de observação do ensaio (compatível com ensaios antigos de campo único)
+function obsLabels(e){
+  if(Array.isArray(e.obsLabels) && e.obsLabels.length) return e.obsLabels;
+  return [e.obsLabel || 'Observação'];
+}
+
+// célula da tabela Tratamento+Foto com uma linha por campo de observação preenchido
+function obsCellHTML(e, av){
+  const labels = obsLabels(e);
+  if(labels.length === 1){
+    const val = av.observacoes[0];
+    return val ? escapeAttr(val) : '<span class="muted">—</span>';
+  }
+  const linhas = labels
+    .map((lbl, idx)=> av.observacoes[idx] ? `<div><b>${escapeAttr(lbl)}:</b> ${escapeAttr(av.observacoes[idx])}</div>` : null)
+    .filter(Boolean);
+  return linhas.length ? linhas.join('') : '<span class="muted">—</span>';
+}
+
+// resumo compacto (sem rótulos) pro card do croqui, onde o espaço é pequeno
+function obsResumo(e, av){
+  const labels = obsLabels(e);
+  const vals = labels.map((lbl, idx)=> av.observacoes[idx]).filter(Boolean);
+  return vals.join(' • ');
 }
 
 function gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes){
@@ -411,6 +453,30 @@ function renderAvaliacoesDatas(valoresExistentes){
     div.innerHTML = `<label>Data da Avaliação ${i}${i===1?' (opcional)':''}</label><input type="date" class="avalDataInput" data-num="${i}" value="${val}">`;
     wrap.appendChild(div);
   }
+}
+
+function addObsLabelRow(value){
+  const wrap = document.getElementById('obsLabelsWrap');
+  const row = document.createElement('div');
+  row.className = 'obsLabelRow';
+  row.innerHTML = `<input type="text" class="obsLabelInput" value="${escapeAttr(value || '')}" placeholder="Observação">` +
+    `<button type="button" class="btn secondary btnRemoverObsLabel">✕</button>`;
+  row.querySelector('.btnRemoverObsLabel').addEventListener('click', ()=>{
+    if(document.querySelectorAll('.obsLabelRow').length <= 1) return;
+    row.remove();
+  });
+  wrap.appendChild(row);
+}
+
+function renderObsLabelsInputs(valores){
+  document.getElementById('obsLabelsWrap').innerHTML = '';
+  const lista = (valores && valores.length) ? valores : ['Observação'];
+  lista.forEach(label=> addObsLabelRow(label));
+}
+
+function coletarObsLabels(){
+  const vals = [...document.querySelectorAll('.obsLabelInput')].map(inp=> inp.value.trim() || 'Observação');
+  return vals.length ? vals : ['Observação'];
 }
 
 function colorFor(t, tratamentos){
@@ -592,7 +658,7 @@ function novoEnsaio(){
   document.getElementById('fColunas').value = '';
   document.getElementById('fLinhas').value = '';
   document.getElementById('fOrientacao').value = 'horizontal';
-  document.getElementById('fObsLabel').value = 'Observação';
+  renderObsLabelsInputs(['Observação']);
   document.getElementById('fNumAvaliacoes').value = 1;
   renderAvaliacoesDatas();
   updateTipoUI();
@@ -699,7 +765,9 @@ function renderCroqui(){
     }
     inner += `<button class="camBtn no-print" data-plot="${p.id}">📷</button>`;
     inner += `</div>`;
-    inner += `<input type="text" class="obsInput" data-plot="${p.id}" placeholder="${escapeAttr(e.obsLabel || 'Observação')}" value="${escapeAttr(av.observacao)}">`;
+    obsLabels(e).forEach((lbl, idx)=>{
+      inner += `<input type="text" class="obsInput" data-plot="${p.id}" data-idx="${idx}" placeholder="${escapeAttr(lbl)}" value="${escapeAttr(av.observacoes[idx] || '')}">`;
+    });
     div.innerHTML = inner;
     grid.appendChild(div);
   });
@@ -737,14 +805,16 @@ function renderCroqui(){
     inp.addEventListener('focus', ()=> state.suppressRender = true);
     inp.addEventListener('input', ()=>{
       const plotId = parseInt(inp.dataset.plot);
+      const idx = inp.dataset.idx;
       const plot = e.plots.find(pp=>pp.id===plotId);
-      if(plot) avaliacaoDoPlot(plot, numAval).observacao = inp.value;
+      if(plot) avaliacaoDoPlot(plot, numAval).observacoes[idx] = inp.value;
     });
     inp.addEventListener('blur', ()=>{
       state.suppressRender = false;
       const plotId = parseInt(inp.dataset.plot);
+      const idx = inp.dataset.idx;
       db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(plotId))
-        .update({ [`avaliacoes.${numAval}.observacao`]: inp.value })
+        .update({ [`avaliacoes.${numAval}.observacoes.${idx}`]: inp.value })
         .catch(err=> console.error('Erro ao salvar observação:', err));
     });
   });
@@ -763,7 +833,7 @@ function renderGaleria(){
   const e = currentEnsaio();
   if(!e) return;
   document.getElementById('galeriaTitulo').textContent = e.nome;
-  document.getElementById('galeriaObsHeader').textContent = e.obsLabel || 'Observação';
+  document.getElementById('galeriaObsHeader').textContent = obsLabels(e).join(' / ');
   renderAvalTabs(e, 'avalTabsGaleria');
   const numAval = state.avaliacaoAtual;
   const labelEl = document.getElementById('galeriaAvalLabel');
@@ -773,9 +843,9 @@ function renderGaleria(){
   e.plots.forEach(p=>{
     const av = avaliacaoDoPlot(p, numAval);
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>#${p.id}</td><td>${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
+    tr.innerHTML = `<td class="vert">#${p.id}</td><td class="vert">${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
       `<td>${av.foto ? `<img src="${av.foto}" data-src="${av.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
-      `<td>${av.observacao ? escapeAttr(av.observacao) : '<span class="muted">—</span>'}</td>`;
+      `<td class="obsCell">${obsCellHTML(e, av)}</td>`;
     tbody.appendChild(tr);
   });
   tbody.querySelectorAll('img').forEach(img=>{
@@ -810,19 +880,19 @@ function renderRelatorio(){
       <div class="num">#${p.id}${p.bloco ? ' · Bloco '+p.bloco : ''}</div>
       <div class="trt">${p.tratamento}</div>
       ${av.foto ? `<img src="${av.foto}" style="width:100%; height:36px; object-fit:cover; border-radius:4px; margin-top:2px;">` : ''}
-      ${av.observacao ? `<div style="font-size:9.5px; margin-top:2px;">${escapeAttr(av.observacao)}</div>` : ''}
+      ${obsResumo(e, av) ? `<div style="font-size:9.5px; margin-top:2px;">${escapeAttr(obsResumo(e, av))}</div>` : ''}
     </div>`;
   });
   html += `</div>`;
 
-  const obsLabel = e.obsLabel || 'Observação';
+  const obsHeader = obsLabels(e).join(' / ');
   html += `<h3 style="margin:0 0 8px 0;">Tratamento + Foto</h3>`;
-  html += `<table><colgroup><col style="width:7%"><col style="width:9%"><col style="width:19%"><col style="width:40%"><col style="width:25%"></colgroup><thead><tr><th>Parcela</th><th>Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th>${obsLabel}</th></tr></thead><tbody>`;
+  html += `<table><colgroup><col style="width:4%"><col style="width:5%"><col style="width:21%"><col style="width:44%"><col style="width:26%"></colgroup><thead><tr><th class="vert">Parcela</th><th class="vert">Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th>${obsHeader}</th></tr></thead><tbody>`;
   e.plots.forEach(p=>{
     const av = avaliacaoDoPlot(p, numAval);
-    html += `<tr><td>#${p.id}</td><td>${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
+    html += `<tr><td class="vert">#${p.id}</td><td class="vert">${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
       `<td>${av.foto ? `<img src="${av.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
-      `<td>${av.observacao ? escapeAttr(av.observacao) : '<span class="muted">—</span>'}</td></tr>`;
+      `<td class="obsCell">${obsCellHTML(e, av)}</td></tr>`;
   });
   html += `</tbody></table>`;
 
@@ -911,7 +981,7 @@ async function importEnsaioFile(file){
         colunas: imported.colunas || imported.tratamentos.length,
         linhas: imported.linhas || null,
         orientacao: imported.orientacao || 'horizontal',
-        obsLabel: imported.obsLabel || 'Observação',
+        obsLabels: (Array.isArray(imported.obsLabels) && imported.obsLabels.length) ? imported.obsLabels : [imported.obsLabel || 'Observação'],
         criadoPor: state.currentUser.email,
         criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
         atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
@@ -970,6 +1040,7 @@ document.getElementById('fColunas').addEventListener('input', ()=>{ state.coluna
 document.getElementById('fLinhas').addEventListener('input', ()=>{ state.linhasTouched = true; });
 document.getElementById('btnNovo').addEventListener('click', novoEnsaio);
 document.getElementById('btnEnsaios').addEventListener('click', mostrarLista);
+document.getElementById('btnAddObsLabel').addEventListener('click', ()=> addObsLabelRow(''));
 document.getElementById('fBuscaEnsaio').addEventListener('input', renderListaEnsaios);
 document.getElementById('fNumAvaliacoes').addEventListener('input', ()=>{
   const e = currentEnsaio();
@@ -984,7 +1055,7 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
   const orientacao = document.getElementById('fOrientacao').value;
   const colunasInput = parseInt(document.getElementById('fColunas').value) || 0;
   const linhasInput = parseInt(document.getElementById('fLinhas').value) || 0;
-  const obsLabel = document.getElementById('fObsLabel').value.trim() || 'Observação';
+  const obsLabelsList = coletarObsLabels();
   const numAvaliacoes = Math.max(1, parseInt(document.getElementById('fNumAvaliacoes').value) || 1);
   const avaliacoesSchedule = [];
   document.querySelectorAll('.avalDataInput').forEach(inp=>{
@@ -1023,7 +1094,7 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
 
   const id = editingExisting ? state.atualId : db.collection('ensaios').doc().id;
   const ensaioData = {
-    nome, tratamentos, repeticoes: reps, tipo, colunas, linhas, orientacao, obsLabel, avaliacoes: avaliacoesSchedule,
+    nome, tratamentos, repeticoes: reps, tipo, colunas, linhas, orientacao, obsLabels: obsLabelsList, avaliacoes: avaliacoesSchedule,
     criadoPor: editingExisting ? state.ensaios[id].criadoPor : state.currentUser.email,
     criadoEm: editingExisting ? (state.ensaios[id].criadoEm || firebase.firestore.FieldValue.serverTimestamp()) : firebase.firestore.FieldValue.serverTimestamp(),
     atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
@@ -1106,7 +1177,7 @@ document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
     document.getElementById('fOrientacao').value = e.orientacao || 'horizontal';
     state.colunasTouched = true;
     state.linhasTouched = true;
-    document.getElementById('fObsLabel').value = e.obsLabel || 'Observação';
+    renderObsLabelsInputs(obsLabels(e));
     const avals = listaAvaliacoes(e);
     document.getElementById('fNumAvaliacoes').value = avals.length;
     renderAvaliacoesDatas(avals);
