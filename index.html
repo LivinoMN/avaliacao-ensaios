@@ -576,6 +576,26 @@ function listenParcelas(ensaioId){
   }, err=> console.error('Erro ao ouvir parcelas:', err));
 }
 
+// grava as parcelas em vários lotes pequenos — cada parcela pode carregar fotos em base64
+// de várias avaliações, e o Firestore rejeita um commit cujo tamanho total passe de ~10MB
+async function commitPlotsInChunks(ensaioId, plots){
+  const MAX_BYTES = 8000000; // margem de segurança abaixo do limite de ~10MB por requisição
+  const MAX_OPS = 400; // margem abaixo do limite de 500 operações por lote do Firestore
+  let batch = db.batch();
+  let bytes = 0, ops = 0;
+  for(const p of plots){
+    const tamanho = JSON.stringify(p).length;
+    if(ops > 0 && (bytes + tamanho > MAX_BYTES || ops >= MAX_OPS)){
+      await batch.commit();
+      batch = db.batch();
+      bytes = 0; ops = 0;
+    }
+    batch.set(db.collection('ensaios').doc(ensaioId).collection('parcelas').doc(String(p.id)), p);
+    bytes += tamanho; ops++;
+  }
+  if(ops > 0) await batch.commit();
+}
+
 async function deleteEnsaio(id){
   try{
     const parcelasSnap = await db.collection('ensaios').doc(id).collection('parcelas').get();
@@ -972,7 +992,6 @@ async function importEnsaioFile(file){
     if(!confirm(`Importar o ensaio "${imported.nome}" (${imported.plots.length} parcelas) para a nuvem compartilhada?`)) return;
     try{
       const id = db.collection('ensaios').doc().id;
-      const batch = db.batch();
       const ensaioData = {
         nome: imported.nome,
         tratamentos: imported.tratamentos,
@@ -989,8 +1008,8 @@ async function importEnsaioFile(file){
       if(Array.isArray(imported.avaliacoes) && imported.avaliacoes.length){
         ensaioData.avaliacoes = imported.avaliacoes;
       }
-      batch.set(db.collection('ensaios').doc(id), ensaioData);
-      imported.plots.forEach(p=>{
+      await db.collection('ensaios').doc(id).set(ensaioData);
+      const plotsData = imported.plots.map(p=>{
         const plotData = {
           id: p.id,
           linha: p.linha || null,
@@ -1003,9 +1022,9 @@ async function importEnsaioFile(file){
         } else {
           plotData.avaliacoes = { 1: { foto: p.foto || null, observacao: p.observacao || '' } };
         }
-        batch.set(db.collection('ensaios').doc(id).collection('parcelas').doc(String(p.id)), plotData);
+        return plotData;
       });
-      await batch.commit();
+      await commitPlotsInChunks(id, plotsData);
       alert('Ensaio importado com sucesso.');
       abrirEnsaio(id);
     }catch(err){ alert('Erro ao importar: ' + err.message); }
@@ -1101,17 +1120,15 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
   };
 
   try{
-    const batch = db.batch();
-    batch.set(db.collection('ensaios').doc(id), ensaioData, { merge: true });
+    await db.collection('ensaios').doc(id).set(ensaioData, { merge: true });
     if(oldPlots && oldPlots.length > plots.length){
+      const delBatch = db.batch();
       for(let i=plots.length; i<oldPlots.length; i++){
-        batch.delete(db.collection('ensaios').doc(id).collection('parcelas').doc(String(oldPlots[i].id)));
+        delBatch.delete(db.collection('ensaios').doc(id).collection('parcelas').doc(String(oldPlots[i].id)));
       }
+      await delBatch.commit();
     }
-    plots.forEach(p=>{
-      batch.set(db.collection('ensaios').doc(id).collection('parcelas').doc(String(p.id)), p);
-    });
-    await batch.commit();
+    await commitPlotsInChunks(id, plots);
   }catch(err){
     alert('Erro ao salvar o ensaio: ' + err.message);
     return;
@@ -1135,9 +1152,7 @@ document.getElementById('btnRerandom').addEventListener('click', async ()=>{
   const novosPlots = gerarPlots(e.tratamentos, e.repeticoes, e.tipo, e.colunas, numAval);
   novosPlots.forEach((p,i)=>{ p.avaliacoes = avaliacoesAntigas[i] || criarAvaliacoesVazias(numAval); });
   try{
-    const batch = db.batch();
-    novosPlots.forEach(p=> batch.set(db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(p.id)), p));
-    await batch.commit();
+    await commitPlotsInChunks(e.id, novosPlots);
   }catch(err){ alert('Erro ao rerandomizar: ' + err.message); return; }
   e.plots = novosPlots;
   renderCroqui();
