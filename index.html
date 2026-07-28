@@ -193,6 +193,14 @@
         <option value="vertical">Vertical (blocos em colunas)</option>
       </select>
     </div>
+    <div class="field hidden" id="frenteWrap">
+      <label id="lblFrente">Frente do ensaio</label>
+      <select id="fFrente">
+        <option value="inicio">Topo</option>
+        <option value="fim">Base</option>
+      </select>
+      <div class="hint">O lado escolhido fica sempre com os tratamentos em sequência (T1, T2, T3...); a partir dele começa o deslocamento.</div>
+    </div>
   </div>
   <div class="hint" style="margin:-6px 0 12px 0;">Ajuste conforme o espaço disponível no campo. Se o total não bater com o nº de parcelas, a última linha/coluna fica incompleta.</div>
   <div class="field">
@@ -394,7 +402,7 @@ function obsResumo(e, av){
   return vals.join(' • ');
 }
 
-function gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes){
+function gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes, frente){
   const plots = [];
   let idx = 1;
   const n = numAvaliacoes || 1;
@@ -409,8 +417,9 @@ function gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes){
   } else if(tipo === 'escada'){
     const base = tratamentos.slice();
     const cols = base.length;
+    const invertido = frente === 'fim';
     for(let b=1;b<=reps;b++){
-      const shift = (b-1) % cols;
+      const shift = (invertido ? (reps - b) : (b - 1)) % cols;
       const ordem = shift === 0 ? base.slice() : base.slice(cols-shift).concat(base.slice(0,cols-shift));
       ordem.forEach((t,c)=>{ plots.push({id:idx++, linha:b, coluna:c+1, bloco:b, tratamento:t, avaliacoes: criarAvaliacoesVazias(n)}); });
     }
@@ -682,10 +691,12 @@ function novoEnsaio(){
   document.getElementById('fColunas').value = '';
   document.getElementById('fLinhas').value = '';
   document.getElementById('fOrientacao').value = 'horizontal';
+  document.getElementById('fFrente').value = 'inicio';
   renderObsLabelsInputs(['Observação']);
   document.getElementById('fNumAvaliacoes').value = 1;
   renderAvaliacoesDatas();
   updateTipoUI();
+  atualizarLabelsFrente();
   document.getElementById('structNote').classList.add('hidden');
   document.getElementById('btnAtualizarDados').classList.add('hidden');
   document.getElementById('btnGerar').textContent = 'Gerar croqui';
@@ -705,6 +716,14 @@ function showView(v){
 function updateTipoUI(){
   const tipo = document.getElementById('fTipo').value;
   document.getElementById('tipoNote').textContent = TIPO_DESC[tipo];
+  document.getElementById('frenteWrap').classList.toggle('hidden', tipo !== 'escada');
+}
+
+function atualizarLabelsFrente(){
+  const vertical = document.getElementById('fOrientacao').value === 'vertical';
+  const sel = document.getElementById('fFrente');
+  sel.options[0].text = vertical ? 'Esquerda' : 'Topo';
+  sel.options[1].text = vertical ? 'Direita' : 'Base';
 }
 
 function parseTratamentos(raw){
@@ -1007,6 +1026,7 @@ async function importEnsaioFile(file){
         colunas: imported.colunas || imported.tratamentos.length,
         linhas: imported.linhas || null,
         orientacao: imported.orientacao || 'horizontal',
+        frente: imported.frente || 'inicio',
         obsLabels: (Array.isArray(imported.obsLabels) && imported.obsLabels.length) ? imported.obsLabels : [imported.obsLabel || 'Observação'],
         criadoPor: state.currentUser.email,
         criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
@@ -1059,9 +1079,9 @@ function compressImage(file, cb){
 }
 
 // ---------- events ----------
-document.getElementById('fTipo').addEventListener('change', ()=>{ updateTipoUI(); sugerirGrade(); });
+document.getElementById('fTipo').addEventListener('change', ()=>{ updateTipoUI(); sugerirGrade(); atualizarLabelsFrente(); });
 document.getElementById('fTratamentos').addEventListener('input', sugerirGrade);
-document.getElementById('fOrientacao').addEventListener('change', sugerirGrade);
+document.getElementById('fOrientacao').addEventListener('change', ()=>{ sugerirGrade(); atualizarLabelsFrente(); });
 document.getElementById('fColunas').addEventListener('input', ()=>{ state.colunasTouched = true; });
 document.getElementById('fLinhas').addEventListener('input', ()=>{ state.linhasTouched = true; });
 document.getElementById('btnNovo').addEventListener('click', novoEnsaio);
@@ -1131,6 +1151,7 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
   const reps = parseInt(document.getElementById('fReps').value) || 1;
   const tipo = document.getElementById('fTipo').value;
   const orientacao = document.getElementById('fOrientacao').value;
+  const frente = document.getElementById('fFrente').value;
   const colunasInput = parseInt(document.getElementById('fColunas').value) || 0;
   const linhasInput = parseInt(document.getElementById('fLinhas').value) || 0;
   const obsLabelsList = coletarObsLabels();
@@ -1160,7 +1181,7 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
 
   const editingExisting = state.atualId && state.ensaios[state.atualId];
   const oldPlots = editingExisting ? state.ensaios[state.atualId].plots : null;
-  const plots = gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes);
+  const plots = gerarPlots(tratamentos, reps, tipo, colunas, numAvaliacoes, frente);
 
   if(oldPlots && oldPlots.length){
     if(!confirm('Você já tinha um croqui gerado para este ensaio. Ao gerar de novo, fotos e observações são mantidas por posição de parcela (#1, #2...). Continuar?')) return;
@@ -1172,7 +1193,7 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
 
   const id = editingExisting ? state.atualId : db.collection('ensaios').doc().id;
   const ensaioData = {
-    nome, tratamentos, repeticoes: reps, tipo, colunas, linhas, orientacao, obsLabels: obsLabelsList, avaliacoes: avaliacoesSchedule,
+    nome, tratamentos, repeticoes: reps, tipo, colunas, linhas, orientacao, frente, obsLabels: obsLabelsList, avaliacoes: avaliacoesSchedule,
     criadoPor: editingExisting ? state.ensaios[id].criadoPor : state.currentUser.email,
     criadoEm: editingExisting ? (state.ensaios[id].criadoEm || firebase.firestore.FieldValue.serverTimestamp()) : firebase.firestore.FieldValue.serverTimestamp(),
     atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
@@ -1208,7 +1229,7 @@ document.getElementById('btnRerandom').addEventListener('click', async ()=>{
   if(!confirm('Isso vai gerar uma nova randomização e manter as fotos/observações já registradas por posição de parcela. Continuar?')) return;
   const avaliacoesAntigas = e.plots.map(p=>{ normalizarPlot(p); return p.avaliacoes; });
   const numAval = listaAvaliacoes(e).length || 1;
-  const novosPlots = gerarPlots(e.tratamentos, e.repeticoes, e.tipo, e.colunas, numAval);
+  const novosPlots = gerarPlots(e.tratamentos, e.repeticoes, e.tipo, e.colunas, numAval, e.frente);
   novosPlots.forEach((p,i)=>{ p.avaliacoes = avaliacoesAntigas[i] || criarAvaliacoesVazias(numAval); });
   try{
     await commitPlotsInChunks(e.id, novosPlots);
@@ -1249,6 +1270,7 @@ document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
     document.getElementById('fColunas').value = e.colunas;
     document.getElementById('fLinhas').value = e.linhas || '';
     document.getElementById('fOrientacao').value = e.orientacao || 'horizontal';
+    document.getElementById('fFrente').value = e.frente || 'inicio';
     state.colunasTouched = true;
     state.linhasTouched = true;
     renderObsLabelsInputs(obsLabels(e));
@@ -1256,6 +1278,7 @@ document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
     document.getElementById('fNumAvaliacoes').value = avals.length;
     renderAvaliacoesDatas(avals);
     updateTipoUI();
+    atualizarLabelsFrente();
     document.getElementById('structNote').classList.remove('hidden');
     document.getElementById('btnAtualizarDados').classList.remove('hidden');
     document.getElementById('btnGerar').textContent = '🔀 Gerar novo croqui';
