@@ -156,6 +156,7 @@
     <label>Nome do ensaio</label>
     <input type="text" id="fNome" placeholder="Ex: Ensaio Soja 2026 - Fazenda Santa Rita">
   </div>
+  <div class="note hidden" id="structNote">⚠️ Tratamentos, Repetições e Casualização definem o sorteio das parcelas. Uma vez que o croqui já foi gerado, mudar esses campos e clicar em "Gerar novo croqui" <strong>reembaralha tudo de novo</strong> (as fotos/observações são mantidas por posição, mas os tratamentos podem trocar de lugar). Para ajustar nome, datas, campos de observação, colunas/linhas etc. sem tocar no croqui, use "💾 Atualizar dados" no final da página.</div>
   <div class="field">
     <label>Tratamentos</label>
     <textarea id="fTratamentos" placeholder="Um tratamento por linha, ex:&#10;T1 - Testemunha&#10;T2 - Produto A&#10;T3 - Produto B"></textarea>
@@ -207,7 +208,10 @@
   </div>
   <div id="avaliacoesDatas"></div>
   <div class="note" id="tipoNote"></div>
-  <button class="btn" id="btnGerar">Gerar croqui</button>
+  <div style="display:flex; gap:10px; flex-wrap:wrap;">
+    <button class="btn secondary hidden" id="btnAtualizarDados">💾 Atualizar dados</button>
+    <button class="btn" id="btnGerar">Gerar croqui</button>
+  </div>
 </div>
 
 <!-- CROQUI VIEW -->
@@ -682,6 +686,9 @@ function novoEnsaio(){
   document.getElementById('fNumAvaliacoes').value = 1;
   renderAvaliacoesDatas();
   updateTipoUI();
+  document.getElementById('structNote').classList.add('hidden');
+  document.getElementById('btnAtualizarDados').classList.add('hidden');
+  document.getElementById('btnGerar').textContent = 'Gerar croqui';
   showView('setup');
 }
 
@@ -1066,6 +1073,58 @@ document.getElementById('fNumAvaliacoes').addEventListener('input', ()=>{
   renderAvaliacoesDatas(e ? listaAvaliacoes(e) : null);
 });
 
+// Atualiza só os dados "de superfície" do ensaio (nome, datas das avaliações, campos de
+// observação, colunas/linhas/orientação) sem tocar no sorteio das parcelas já gerado.
+document.getElementById('btnAtualizarDados').addEventListener('click', async ()=>{
+  const id = state.atualId;
+  const e = currentEnsaio();
+  if(!id || !e){ alert('Abra um ensaio existente para atualizar os dados.'); return; }
+
+  const nome = document.getElementById('fNome').value.trim() || 'Ensaio sem nome';
+  const orientacao = document.getElementById('fOrientacao').value;
+  const colunasInput = parseInt(document.getElementById('fColunas').value) || 0;
+  const linhasInput = parseInt(document.getElementById('fLinhas').value) || 0;
+  const obsLabelsList = coletarObsLabels();
+  const avaliacoesSchedule = [];
+  document.querySelectorAll('.avalDataInput').forEach(inp=>{
+    avaliacoesSchedule.push({ numero: parseInt(inp.dataset.num), data: inp.value || null });
+  });
+
+  // tratamentos/repetições/tipo continuam sendo os já salvos — essa ação nunca reembaralha o croqui
+  const totalParcelas = e.tratamentos.length * e.repeticoes;
+  let colunas, linhas;
+  if(orientacao === 'vertical'){
+    linhas = linhasInput || e.tratamentos.length;
+    colunas = colunasInput || Math.ceil(totalParcelas / linhas);
+    if(colunasInput && (linhas * colunasInput) !== totalParcelas){
+      if(!confirm(`${linhas} linhas × ${colunasInput} colunas = ${linhas*colunasInput}, mas o ensaio tem ${totalParcelas} parcelas. A última coluna do croqui vai ficar incompleta. Continuar mesmo assim?`)) return;
+    }
+  } else {
+    colunas = colunasInput || e.tratamentos.length;
+    linhas = linhasInput || Math.ceil(totalParcelas / colunas);
+    if(linhasInput && (linhasInput * colunas) !== totalParcelas){
+      if(!confirm(`${linhasInput} linhas × ${colunas} colunas = ${linhasInput*colunas}, mas o ensaio tem ${totalParcelas} parcelas. A última linha do croqui vai ficar incompleta. Continuar mesmo assim?`)) return;
+    }
+  }
+
+  const dadosAtualizados = {
+    nome, colunas, linhas, orientacao, obsLabels: obsLabelsList, avaliacoes: avaliacoesSchedule,
+    atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
+  };
+
+  try{
+    await db.collection('ensaios').doc(id).set(dadosAtualizados, { merge: true });
+  }catch(err){
+    alert('Erro ao atualizar os dados: ' + err.message);
+    return;
+  }
+
+  Object.assign(state.ensaios[id], dadosAtualizados);
+  alert('Dados atualizados. O croqui e os tratamentos das parcelas não foram alterados.');
+  showView('croqui');
+  renderCroqui();
+});
+
 document.getElementById('btnGerar').addEventListener('click', async ()=>{
   const nome = document.getElementById('fNome').value.trim() || 'Ensaio sem nome';
   const tratamentos = parseTratamentos(document.getElementById('fTratamentos').value);
@@ -1197,6 +1256,9 @@ document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
     document.getElementById('fNumAvaliacoes').value = avals.length;
     renderAvaliacoesDatas(avals);
     updateTipoUI();
+    document.getElementById('structNote').classList.remove('hidden');
+    document.getElementById('btnAtualizarDados').classList.remove('hidden');
+    document.getElementById('btnGerar').textContent = '🔀 Gerar novo croqui';
   }
   showView('setup');
 });
