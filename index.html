@@ -31,6 +31,11 @@
   .btn.danger{background:#b3452f; color:#fff;}
   .btn.danger:hover{background:#93381f;}
   .btn:disabled{opacity:.5; cursor:not-allowed;}
+  #badgePendencias{
+    background:#f4e3b0; color:#7a5b12; border:1px solid #e0c477; border-radius:20px;
+    padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer;
+  }
+  #badgePendencias:hover{background:#eed897;}
   .card{background:#fff; border:1px solid #e3e2dc; border-radius:10px; padding:16px; margin-bottom:14px;}
   label{display:block; font-weight:600; margin-bottom:4px; font-size:13px;}
   input[type=text], input[type=number], textarea, select{
@@ -127,6 +132,7 @@
   </div>
   <div class="no-print" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <span class="muted" id="userInfo"></span>
+    <button class="hidden" id="badgePendencias" title="Clique para tentar sincronizar agora"></button>
     <button class="btn secondary hidden" id="btnAdmin">👤 Gerenciar acessos</button>
     <button class="btn secondary" id="btnEnsaios">📋 Ensaios</button>
     <button class="btn secondary" id="btnNovo">+ Novo ensaio</button>
@@ -333,10 +339,78 @@ let state = {
   unsubEnsaios: null,
   unsubParcelas: null,
   suppressRender: false,
-  avaliacaoAtual: 1
+  avaliacaoAtual: 1,
+  pendencias: carregarPendencias()
 };
 
 function uid(){ return 'e' + Date.now() + Math.floor(Math.random()*1000); }
+
+// ---------- fila de pendências (fotos/observações/tratamentos que ainda não confirmaram no servidor) ----------
+// Guarda uma cópia local (localStorage) de cada gravação em andamento. Sobrevive a recarregar a página
+// ou perder conexão no meio do envio — sem isso, uma falha de rede podia perder a foto/observação de vez.
+const PENDENCIAS_KEY = 'avaliacaoEnsaios_pendencias_v1';
+
+function carregarPendencias(){
+  try{ return JSON.parse(localStorage.getItem(PENDENCIAS_KEY) || '{}'); }
+  catch(err){ return {}; }
+}
+
+function salvarPendenciasLocal(){
+  try{ localStorage.setItem(PENDENCIAS_KEY, JSON.stringify(state.pendencias)); }
+  catch(err){ console.warn('Não foi possível gravar a fila de pendências localmente:', err); }
+}
+
+function atualizarBadgePendencias(){
+  const n = Object.keys(state.pendencias).length;
+  const el = document.getElementById('badgePendencias');
+  if(!el) return;
+  el.classList.toggle('hidden', n === 0);
+  el.textContent = `🔄 ${n} pendente${n>1?'s':''} de sincronizar`;
+}
+
+// grava um campo de uma parcela: mostra o valor na hora (otimista), guarda cópia local
+// e só remove da fila de pendências quando o Firestore confirmar a gravação
+function salvarCampoParcela(ensaioId, plotId, campo, valor){
+  const chave = `${ensaioId}::${plotId}::${campo}`;
+  state.pendencias[chave] = { ensaioId, plotId, campo, valor, ts: Date.now() };
+  salvarPendenciasLocal();
+  atualizarBadgePendencias();
+  db.collection('ensaios').doc(ensaioId).collection('parcelas').doc(String(plotId))
+    .update({ [campo]: valor })
+    .then(()=>{
+      const atual = state.pendencias[chave];
+      // só remove da fila se nenhuma edição mais nova sobrescreveu esse campo enquanto a gravação estava em andamento
+      if(atual && atual.valor === valor){
+        delete state.pendencias[chave];
+        salvarPendenciasLocal();
+        atualizarBadgePendencias();
+      }
+    })
+    .catch(err=>{
+      console.error(`Gravação de "${campo}" ficou pendente (será reenviada automaticamente):`, err);
+      atualizarBadgePendencias();
+    });
+}
+
+async function tentarSincronizarPendencias(){
+  const chaves = Object.keys(state.pendencias);
+  if(!chaves.length) return;
+  for(const chave of chaves){
+    const p = state.pendencias[chave];
+    if(!p) continue;
+    try{
+      await db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId))
+        .update({ [p.campo]: p.valor });
+      if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
+        delete state.pendencias[chave];
+      }
+    }catch(err){
+      // continua pendente — tenta de novo na próxima passada
+    }
+  }
+  salvarPendenciasLocal();
+  atualizarBadgePendencias();
+}
 
 function shuffle(arr){
   const a = arr.slice();
@@ -550,6 +624,8 @@ function checkAuthorization(user){
       showScreen('app');
       mostrarLista();
       startEnsaiosListener();
+      atualizarBadgePendencias();
+      tentarSincronizarPendencias();
     } else {
       document.getElementById('unauthEmail').textContent = email;
       showScreen('unauthorized');
@@ -842,8 +918,7 @@ function renderCroqui(){
       const plotId = parseInt(sel.dataset.plot);
       const plot = e.plots.find(pp=>pp.id===plotId);
       plot.tratamento = sel.value;
-      db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(plotId)).update({tratamento: sel.value})
-        .catch(err=> console.error('Erro ao salvar tratamento:', err));
+      salvarCampoParcela(e.id, plotId, 'tratamento', sel.value);
       renderCroqui();
     });
   });
@@ -859,9 +934,7 @@ function renderCroqui(){
       state.suppressRender = false;
       const plotId = parseInt(inp.dataset.plot);
       const idx = inp.dataset.idx;
-      db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(plotId))
-        .update({ [`avaliacoes.${numAval}.observacoes.${idx}`]: inp.value })
-        .catch(err=> console.error('Erro ao salvar observação:', err));
+      salvarCampoParcela(e.id, plotId, `avaliacoes.${numAval}.observacoes.${idx}`, inp.value);
     });
   });
 }
@@ -1302,20 +1375,20 @@ document.getElementById('fileInput').addEventListener('change', (ev)=>{
     const numAval = state.avaliacaoAtual;
     if(plot) avaliacaoDoPlot(plot, numAval).foto = dataUrl;
     renderCroqui();
-    db.collection('ensaios').doc(e.id).collection('parcelas').doc(String(state.pendingPlotId))
-      .update({ [`avaliacoes.${numAval}.foto`]: dataUrl })
-      .catch(err=>{
-        console.error('Erro ao salvar foto:', err);
-        alert('Não foi possível salvar a foto agora. Ela será reenviada quando a conexão voltar.');
-      });
+    salvarCampoParcela(e.id, state.pendingPlotId, `avaliacoes.${numAval}.foto`, dataUrl);
   });
   ev.target.value = '';
 });
+
+document.getElementById('badgePendencias').addEventListener('click', tentarSincronizarPendencias);
+window.addEventListener('online', tentarSincronizarPendencias);
+setInterval(tentarSincronizarPendencias, 20000);
 
 // ---------- init ----------
 document.getElementById('logoHeader').src = LOGO_DATA_URI;
 document.getElementById('logoLogin').src = LOGO_DATA_URI;
 updateTipoUI();
+atualizarBadgePendencias();
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
