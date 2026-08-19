@@ -78,8 +78,11 @@
   td.obsCell div{margin-bottom:4px; line-height:1.35;}
   td.obsCell div:last-child{margin-bottom:0;}
   td.obsCell b{font-weight:600;}
+  .statCard{border-top:1px solid #e3e2dc; padding-top:14px; margin-top:8px;}
+  .statCard table{margin-bottom:6px;}
   .obsLabelRow{display:flex; gap:6px; margin-bottom:6px; align-items:center;}
-  .obsLabelRow input{flex:1;}
+  .obsLabelRow input{flex:2;}
+  .obsLabelRow .obsLabelTipo{flex:1; min-width:110px;}
   .obsLabelRow .btnRemoverObsLabel{padding:6px 10px; flex:none;}
   .legend{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;}
   .legend span{display:inline-flex; align-items:center; gap:5px; font-size:12px;}
@@ -209,6 +212,12 @@
     </div>
   </div>
   <div class="hint" style="margin:-6px 0 12px 0;">Ajuste conforme o espaço disponível no campo. Se o total não bater com o nº de parcelas, a última linha/coluna fica incompleta.</div>
+  <div class="field">
+    <label>Quantas aplicações foram feitas?</label>
+    <input type="number" id="fNumAplicacoes" min="0" value="0">
+    <div class="hint">Cada aplicação (produto/tratamento aplicado no campo) tem nome e data. As avaliações mostram automaticamente quantos dias se passaram desde cada aplicação (DAA).</div>
+  </div>
+  <div id="aplicacoesDatas"></div>
   <div class="field">
     <label>Campos de observação</label>
     <div id="obsLabelsWrap"></div>
@@ -451,9 +460,15 @@ function avaliacaoDoPlot(p, num){
 }
 
 // lista de campos de observação do ensaio (compatível com ensaios antigos de campo único)
+// normaliza para {nome, tipo:'numero'|'texto'} — compatível com ensaios antigos
+// (obsLabels como lista de strings, ou obsLabel como campo único)
 function obsLabels(e){
-  if(Array.isArray(e.obsLabels) && e.obsLabels.length) return e.obsLabels;
-  return [e.obsLabel || 'Observação'];
+  if(Array.isArray(e.obsLabels) && e.obsLabels.length){
+    return e.obsLabels.map(o=> typeof o === 'string'
+      ? { nome: o, tipo: 'texto' }
+      : { nome: o.nome || 'Observação', tipo: o.tipo === 'numero' ? 'numero' : 'texto' });
+  }
+  return [{ nome: e.obsLabel || 'Observação', tipo: 'texto' }];
 }
 
 // célula da tabela Tratamento+Foto com uma linha por campo de observação preenchido
@@ -464,7 +479,7 @@ function obsCellHTML(e, av){
     return val ? escapeAttr(val) : '<span class="muted">—</span>';
   }
   const linhas = labels
-    .map((lbl, idx)=> av.observacoes[idx] ? `<div><b>${escapeAttr(lbl)}:</b> ${escapeAttr(av.observacoes[idx])}</div>` : null)
+    .map((lbl, idx)=> av.observacoes[idx] ? `<div><b>${escapeAttr(lbl.nome)}:</b> ${escapeAttr(av.observacoes[idx])}</div>` : null)
     .filter(Boolean);
   return linhas.length ? linhas.join('') : '<span class="muted">—</span>';
 }
@@ -542,11 +557,326 @@ function renderAvaliacoesDatas(valoresExistentes){
   }
 }
 
-function addObsLabelRow(value){
+function renderAplicacoesDatas(valoresExistentes){
+  const n = Math.max(0, parseInt(document.getElementById('fNumAplicacoes').value) || 0);
+  const wrap = document.getElementById('aplicacoesDatas');
+  wrap.innerHTML = '';
+  for(let i=1;i<=n;i++){
+    const existente = valoresExistentes && valoresExistentes.find(a=>a.numero===i);
+    const nome = existente ? (existente.nome || `Aplicação ${i}`) : `Aplicação ${i}`;
+    const data = existente ? (existente.data || '') : '';
+    const div = document.createElement('div');
+    div.className = 'row';
+    div.style.marginBottom = '8px';
+    div.innerHTML =
+      `<div class="field" style="margin-bottom:0;"><label>Nome da aplicação ${i}</label><input type="text" class="aplicNomeInput" data-num="${i}" value="${escapeAttr(nome)}"></div>` +
+      `<div class="field" style="margin-bottom:0;"><label>Data da aplicação ${i}</label><input type="date" class="aplicDataInput" data-num="${i}" value="${data}"></div>`;
+    wrap.appendChild(div);
+  }
+}
+
+function coletarAplicacoes(){
+  const aplicacoes = [];
+  document.querySelectorAll('.aplicNomeInput').forEach(inp=>{
+    const num = parseInt(inp.dataset.num);
+    const dataInp = document.querySelector(`.aplicDataInput[data-num="${num}"]`);
+    aplicacoes.push({ numero: num, nome: inp.value.trim() || `Aplicação ${num}`, data: (dataInp && dataInp.value) || null });
+  });
+  return aplicacoes;
+}
+
+// dias após cada aplicação (com data) que já aconteceu até a data da avaliação
+function calcularDAA(aplicacoes, dataAvaliacao){
+  if(!dataAvaliacao || !Array.isArray(aplicacoes) || !aplicacoes.length) return [];
+  const dAval = new Date(dataAvaliacao + 'T00:00:00');
+  return aplicacoes
+    .filter(a=> a.data)
+    .map(a=>{
+      const dApl = new Date(a.data + 'T00:00:00');
+      const dias = Math.round((dAval - dApl) / 86400000);
+      return { numero: a.numero, nome: a.nome, dias };
+    })
+    .filter(a=> a.dias >= 0)
+    .sort((a,b)=> a.numero - b.numero);
+}
+
+function formatarDAA(aplicacoes, dataAvaliacao){
+  const lista = calcularDAA(aplicacoes, dataAvaliacao);
+  if(!lista.length) return '';
+  return lista.map(a=> `${a.dias} DAA-${a.numero}`).join(', ');
+}
+
+// ---------- motor estatístico: ANOVA + teste de Tukey (5%) ----------
+// funções matemáticas de base (gamma, beta incompleta, distribuição F, amplitude estudentizada)
+function logGamma(x){
+  const g = 7;
+  const c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+    771.32342877765313, -176.61502916214059, 12.507343278686905,
+    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if(x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI*x)) - logGamma(1-x);
+  x -= 1;
+  let a = c[0];
+  const t = x + g + 0.5;
+  for(let i=1;i<g+2;i++) a += c[i]/(x+i);
+  return 0.5*Math.log(2*Math.PI) + (x+0.5)*Math.log(t) - t + Math.log(a);
+}
+function betacf(x,a,b){
+  const MAXIT=200, EPS=3e-9, FPMIN=1e-30;
+  let m,m2,aa,c,d,del,h,qab,qam,qap;
+  qab=a+b; qap=a+1; qam=a-1;
+  c=1; d=1-qab*x/qap;
+  if(Math.abs(d)<FPMIN) d=FPMIN;
+  d=1/d; h=d;
+  for(m=1;m<=MAXIT;m++){
+    m2=2*m;
+    aa=m*(b-m)*x/((qam+m2)*(a+m2));
+    d=1+aa*d; if(Math.abs(d)<FPMIN) d=FPMIN;
+    c=1+aa/c; if(Math.abs(c)<FPMIN) c=FPMIN;
+    d=1/d; h*=d*c;
+    aa=-(a+m)*(qab+m)*x/((a+m2)*(qap+m2));
+    d=1+aa*d; if(Math.abs(d)<FPMIN) d=FPMIN;
+    c=1+aa/c; if(Math.abs(c)<FPMIN) c=FPMIN;
+    d=1/d; del=d*c; h*=del;
+    if(Math.abs(del-1)<EPS) break;
+  }
+  return h;
+}
+function betainc(x,a,b){
+  if(x<=0) return 0;
+  if(x>=1) return 1;
+  const bt = Math.exp(logGamma(a+b)-logGamma(a)-logGamma(b)+a*Math.log(x)+b*Math.log(1-x));
+  if(x < (a+1)/(a+b+2)) return bt*betacf(x,a,b)/a;
+  return 1 - bt*betacf(1-x,b,a)/b;
+}
+function fDistCDF(F, d1, d2){
+  if(F<=0) return 0;
+  const x = d1*F/(d1*F+d2);
+  return betainc(x, d1/2, d2/2);
+}
+function erf(x){
+  const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+  const sign = x<0?-1:1; x=Math.abs(x);
+  const t=1/(1+p*x);
+  const y=1-((((a5*t+a4)*t+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
+  return sign*y;
+}
+function normPDF(z){ return Math.exp(-z*z/2)/Math.sqrt(2*Math.PI); }
+function normCDF(z){ return 0.5*(1+erf(z/Math.SQRT2)); }
+function gaussLegendreNodes(n){
+  const x=new Array(n), w=new Array(n);
+  const m=(n+1)/2;
+  for(let i=0;i<m;i++){
+    let z=Math.cos(Math.PI*(i+0.75)/(n+0.5));
+    let z1,pp;
+    do{
+      let p1=1,p2=0;
+      for(let j=0;j<n;j++){ const p3=p2; p2=p1; p1=((2*j+1)*z*p2-j*p3)/(j+1); }
+      pp=n*(z*p1-p2)/(z*z-1);
+      z1=z; z=z1-p1/pp;
+    }while(Math.abs(z-z1)>1e-14);
+    x[i]=-z; x[n-1-i]=z;
+    w[i]=2/((1-z*z)*pp*pp); w[n-1-i]=w[i];
+  }
+  return {x,w};
+}
+const GL64 = gaussLegendreNodes(64);
+function wprobTukey(q,k){
+  const a=-9,b=9;
+  let sum=0;
+  for(let i=0;i<GL64.x.length;i++){
+    const z = 0.5*(b-a)*GL64.x[i]+0.5*(b+a);
+    const wt = 0.5*(b-a)*GL64.w[i];
+    sum += wt*normPDF(z)*Math.pow(normCDF(z)-normCDF(z-q), k-1);
+  }
+  return k*sum;
+}
+function ptukey(q,k,v){
+  if(!(q>0)) return 0;
+  if(v>4000) return wprobTukey(q,k);
+  const logC = (v/2)*Math.log(v/2) - logGamma(v/2) + Math.log(2);
+  function fs(s){ if(s<=0) return 0; return Math.exp(logC + (v-1)*Math.log(s) - v*s*s/2); }
+  const a=0, b=8;
+  let sum=0;
+  for(let i=0;i<GL64.x.length;i++){
+    const s = 0.5*(b-a)*GL64.x[i]+0.5*(b+a);
+    const wt = 0.5*(b-a)*GL64.w[i];
+    sum += wt * fs(s) * wprobTukey(q*s, k);
+  }
+  return sum;
+}
+function qtukey(p,k,v){
+  if(k<2) return 0;
+  let lo=0, hi=100;
+  for(let i=0;i<100;i++){ const mid=(lo+hi)/2; if(ptukey(mid,k,v)<p) lo=mid; else hi=mid; }
+  return (lo+hi)/2;
+}
+
+// coleta os valores numéricos de um campo de observação, para uma avaliação, por parcela
+function coletarDadosAnalise(e, numAval, obsIdx){
+  const linhas = [];
+  let faltando = 0;
+  e.plots.forEach(p=>{
+    const av = avaliacaoDoPlot(p, numAval);
+    const raw = av.observacoes[obsIdx];
+    const val = (raw === undefined || raw === null || raw === '') ? null : parseFloat(String(raw).replace(',','.'));
+    if(val === null || isNaN(val)){ faltando++; return; }
+    linhas.push({ tratamento: p.tratamento, bloco: p.bloco, valor: val });
+  });
+  return { linhas, faltando, total: e.plots.length };
+}
+
+// ANOVA — DIC (sem bloco) quando comBloco=false, ou DBC/Escada/Manual (bloco = repetição) quando comBloco=true
+function calcularAnova(linhas, comBloco){
+  const tratamentosUnicos = [...new Set(linhas.map(l=>l.tratamento))];
+  const t = tratamentosUnicos.length;
+  const N = linhas.length;
+  const mediaGeral = linhas.reduce((s,l)=>s+l.valor,0) / N;
+
+  const porTratamento = tratamentosUnicos.map(trt=>{
+    const vals = linhas.filter(l=>l.tratamento===trt).map(l=>l.valor);
+    return { tratamento: trt, n: vals.length, media: vals.reduce((s,v)=>s+v,0)/vals.length };
+  });
+
+  let sqTotal = 0;
+  linhas.forEach(l=> sqTotal += Math.pow(l.valor - mediaGeral, 2));
+  const glTotal = N - 1;
+
+  let sqTrat = 0;
+  porTratamento.forEach(pt=> sqTrat += pt.n * Math.pow(pt.media - mediaGeral, 2));
+  const glTrat = t - 1;
+
+  let sqBloco = 0, glBloco = 0;
+  if(comBloco){
+    const blocosUnicos = [...new Set(linhas.map(l=>l.bloco))];
+    const porBloco = blocosUnicos.map(bl=>{
+      const vals = linhas.filter(l=>l.bloco===bl).map(l=>l.valor);
+      return { bloco: bl, n: vals.length, media: vals.reduce((s,v)=>s+v,0)/vals.length };
+    });
+    porBloco.forEach(pb=> sqBloco += pb.n * Math.pow(pb.media - mediaGeral, 2));
+    glBloco = blocosUnicos.length - 1;
+  }
+
+  const sqResiduo = sqTotal - sqTrat - sqBloco;
+  const glResiduo = glTotal - glTrat - glBloco;
+
+  const qmTrat = sqTrat / glTrat;
+  const qmBloco = glBloco > 0 ? sqBloco / glBloco : null;
+  const qmResiduo = sqResiduo / glResiduo;
+
+  const fTrat = qmTrat / qmResiduo;
+  const pTrat = glResiduo > 0 ? (1 - fDistCDF(fTrat, glTrat, glResiduo)) : null;
+
+  const fBloco = qmBloco !== null ? qmBloco / qmResiduo : null;
+  const pBloco = (fBloco !== null && glResiduo > 0) ? (1 - fDistCDF(fBloco, glBloco, glResiduo)) : null;
+
+  const cv = (Math.sqrt(qmResiduo) / mediaGeral) * 100;
+  const repsPorTratamento = porTratamento[0] ? porTratamento[0].n : 0;
+
+  return {
+    t, N, mediaGeral, porTratamento, comBloco,
+    glTrat, sqTrat, qmTrat, fTrat, pTrat,
+    glBloco, sqBloco, qmBloco, fBloco, pBloco,
+    glResiduo, sqResiduo, qmResiduo,
+    glTotal, sqTotal, cv, repsPorTratamento
+  };
+}
+
+// agrupamento de letras pelo teste de Tukey a 5% (varredura com absorção de subgrupos redundantes)
+function letrasTukey(porTratamento, qmResiduo, glResiduo, repsPorTratamento){
+  const t = porTratamento.length;
+  const q = qtukey(0.95, t, glResiduo);
+  const hsd = q * Math.sqrt(qmResiduo / repsPorTratamento);
+  const ordenado = porTratamento.slice().sort((a,b)=> b.media - a.media);
+  const grupos = [];
+  let i = 0;
+  const proximaLetra = (idx)=>{
+    let s=''; idx++;
+    while(idx>0){ idx--; s = String.fromCharCode(97 + (idx % 26)) + s; idx = Math.floor(idx/26); }
+    return s;
+  };
+  while(i < t){
+    let j = i;
+    while(j+1 < t && (ordenado[i].media - ordenado[j+1].media) <= hsd) j++;
+    const ultimo = grupos[grupos.length-1];
+    if(ultimo && ultimo.from <= i && ultimo.to >= j){ i++; continue; }
+    grupos.push({ letra: proximaLetra(grupos.length), from: i, to: j });
+    i++;
+  }
+  ordenado.forEach((pt, idx)=>{
+    pt.letra = grupos.filter(g=> g.from <= idx && idx <= g.to).map(g=>g.letra).join('');
+  });
+  return { ordenado, hsd, q };
+}
+
+// monta o HTML da seção "Análise estatística" do relatório, um bloco por campo numérico
+function renderAnaliseEstatistica(e, numAval){
+  const numericos = obsLabels(e).map((lbl, idx)=> Object.assign({}, lbl, { idx })).filter(l=> l.tipo === 'numero');
+  if(!numericos.length){
+    return `<h3 style="margin:24px 0 8px 0;">Análise estatística</h3>
+      <div class="muted">Nenhum campo de observação numérico foi cadastrado neste ensaio. Marque um campo como "Numérico" na tela de configuração para habilitar ANOVA e teste de Tukey.</div>`;
+  }
+  const comBloco = e.tipo !== 'dic';
+  const fmt = (v, dec)=> (v===null || v===undefined || isNaN(v)) ? '—' : v.toFixed(dec===undefined?2:dec);
+  const fmtP = (p)=>{
+    if(p===null || p===undefined || isNaN(p)) return '—';
+    if(p < 0.0001) return '<0,0001';
+    return p.toFixed(4).replace('.',',');
+  };
+  const sig = (p)=> (p!==null && p!==undefined && !isNaN(p) && p < 0.05) ? ' *' : (p!==null && p!==undefined && !isNaN(p) ? ' ns' : '');
+
+  let html = `<h3 style="margin:24px 0 8px 0;">Análise estatística</h3>`;
+  numericos.forEach(campo=>{
+    const { linhas, faltando, total } = coletarDadosAnalise(e, numAval, campo.idx);
+    html += `<div class="statCard">`;
+    html += `<h4 style="margin:0 0 8px 0;">${escapeAttr(campo.nome)}</h4>`;
+    if(faltando > 0){
+      html += `<div class="muted">Dados incompletos: ${total - faltando} de ${total} parcelas preenchidas para este campo nesta avaliação. Preencha todas as parcelas para calcular a ANOVA.</div></div>`;
+      return;
+    }
+    const contagens = {};
+    linhas.forEach(l=> contagens[l.tratamento] = (contagens[l.tratamento]||0)+1);
+    const ns = Object.values(contagens);
+    if(!ns.every(n=> n === ns[0])){
+      html += `<div class="muted">O número de repetições preenchidas não está igual entre todos os tratamentos — não é possível calcular a ANOVA de forma confiável.</div></div>`;
+      return;
+    }
+    const anova = calcularAnova(linhas, comBloco);
+    if(anova.glResiduo <= 0){
+      html += `<div class="muted">Repetições insuficientes para calcular o resíduo (GL resíduo = ${anova.glResiduo}). São necessárias ao menos 2 repetições.</div></div>`;
+      return;
+    }
+    const { ordenado, hsd } = letrasTukey(anova.porTratamento, anova.qmResiduo, anova.glResiduo, anova.repsPorTratamento);
+
+    html += `<table style="margin-bottom:10px;"><thead><tr><th>FV</th><th>GL</th><th>SQ</th><th>QM</th><th>F</th><th>p-valor</th></tr></thead><tbody>`;
+    html += `<tr><td>Tratamento</td><td>${anova.glTrat}</td><td>${fmt(anova.sqTrat)}</td><td>${fmt(anova.qmTrat)}</td><td>${fmt(anova.fTrat)}</td><td>${fmtP(anova.pTrat)}${sig(anova.pTrat)}</td></tr>`;
+    if(comBloco){
+      html += `<tr><td>Bloco</td><td>${anova.glBloco}</td><td>${fmt(anova.sqBloco)}</td><td>${fmt(anova.qmBloco)}</td><td>${fmt(anova.fBloco)}</td><td>${fmtP(anova.pBloco)}${sig(anova.pBloco)}</td></tr>`;
+    }
+    html += `<tr><td>Resíduo</td><td>${anova.glResiduo}</td><td>${fmt(anova.sqResiduo)}</td><td>${fmt(anova.qmResiduo)}</td><td>—</td><td>—</td></tr>`;
+    html += `<tr><td>Total</td><td>${anova.glTotal}</td><td>${fmt(anova.sqTotal)}</td><td>—</td><td>—</td><td>—</td></tr>`;
+    html += `</tbody></table>`;
+    html += `<div class="muted" style="margin-bottom:10px;">CV = ${fmt(anova.cv,1)}% — Média geral = ${fmt(anova.mediaGeral)} — * significativo a 5% pelo teste F, ns = não significativo</div>`;
+
+    html += `<table><thead><tr><th>Tratamento</th><th>Média</th><th>Grupo (Tukey 5%)</th></tr></thead><tbody>`;
+    ordenado.forEach(pt=>{
+      html += `<tr><td>${escapeAttr(pt.tratamento)}</td><td>${fmt(pt.media)}</td><td><b>${pt.letra}</b></td></tr>`;
+    });
+    html += `</tbody></table>`;
+    html += `<div class="muted" style="margin-top:6px;">Médias seguidas de mesma letra não diferem entre si pelo teste de Tukey a 5% (DMS = ${fmt(hsd)}).</div>`;
+    html += `</div>`;
+  });
+  return html;
+}
+
+function addObsLabelRow(nome, tipo){
   const wrap = document.getElementById('obsLabelsWrap');
   const row = document.createElement('div');
   row.className = 'obsLabelRow';
-  row.innerHTML = `<input type="text" class="obsLabelInput" value="${escapeAttr(value || '')}" placeholder="Observação">` +
+  row.innerHTML = `<input type="text" class="obsLabelInput" value="${escapeAttr(nome || '')}" placeholder="Observação">` +
+    `<select class="obsLabelTipo">
+       <option value="texto"${tipo!=='numero'?' selected':''}>Texto</option>
+       <option value="numero"${tipo==='numero'?' selected':''}>Numérico</option>
+     </select>` +
     `<button type="button" class="btn secondary btnRemoverObsLabel">✕</button>`;
   row.querySelector('.btnRemoverObsLabel').addEventListener('click', ()=>{
     if(document.querySelectorAll('.obsLabelRow').length <= 1) return;
@@ -557,13 +887,21 @@ function addObsLabelRow(value){
 
 function renderObsLabelsInputs(valores){
   document.getElementById('obsLabelsWrap').innerHTML = '';
-  const lista = (valores && valores.length) ? valores : ['Observação'];
-  lista.forEach(label=> addObsLabelRow(label));
+  const lista = (valores && valores.length) ? valores : [{ nome: 'Observação', tipo: 'texto' }];
+  lista.forEach(o=>{
+    if(typeof o === 'string') addObsLabelRow(o, 'texto');
+    else addObsLabelRow(o.nome, o.tipo);
+  });
 }
 
 function coletarObsLabels(){
-  const vals = [...document.querySelectorAll('.obsLabelInput')].map(inp=> inp.value.trim() || 'Observação');
-  return vals.length ? vals : ['Observação'];
+  const nomes = [...document.querySelectorAll('.obsLabelInput')];
+  const tipos = [...document.querySelectorAll('.obsLabelTipo')];
+  const vals = nomes.map((inp,i)=> ({
+    nome: inp.value.trim() || 'Observação',
+    tipo: (tipos[i] && tipos[i].value === 'numero') ? 'numero' : 'texto'
+  }));
+  return vals.length ? vals : [{ nome: 'Observação', tipo: 'texto' }];
 }
 
 function colorFor(t, tratamentos){
@@ -771,6 +1109,8 @@ function novoEnsaio(){
   renderObsLabelsInputs(['Observação']);
   document.getElementById('fNumAvaliacoes').value = 1;
   renderAvaliacoesDatas();
+  document.getElementById('fNumAplicacoes').value = 0;
+  renderAplicacoesDatas();
   updateTipoUI();
   atualizarLabelsFrente();
   document.getElementById('structNote').classList.add('hidden');
@@ -838,7 +1178,8 @@ function renderAvalTabs(e, containerId){
     const btn = document.createElement('button');
     btn.className = 'tab' + (a.numero === state.avaliacaoAtual ? ' active' : '');
     const link = calendarLink(e.nome, a);
-    btn.innerHTML = `<span>V${a.numero}${a.data ? ' · ' + formatarDataBr(a.data) : ''}</span>` +
+    const daaText = formatarDAA(e.aplicacoes, a.data);
+    btn.innerHTML = `<span>V${a.numero}${a.data ? ' · ' + formatarDataBr(a.data) : ''}${daaText ? ' · ' + daaText : ''}</span>` +
       (link ? `<a class="avalLink" href="${link}" target="_blank" title="Adicionar ao Google Agenda" onclick="event.stopPropagation()">📅</a>` : '');
     btn.addEventListener('click', ()=>{
       state.avaliacaoAtual = a.numero;
@@ -888,7 +1229,8 @@ function renderCroqui(){
     inner += `<button class="camBtn no-print" data-plot="${p.id}">📷</button>`;
     inner += `</div>`;
     obsLabels(e).forEach((lbl, idx)=>{
-      inner += `<input type="text" class="obsInput" data-plot="${p.id}" data-idx="${idx}" placeholder="${escapeAttr(lbl)}" value="${escapeAttr(av.observacoes[idx] || '')}">`;
+      const tipoInput = lbl.tipo === 'numero' ? 'number' : 'text';
+      inner += `<input type="${tipoInput}" class="obsInput" data-plot="${p.id}" data-idx="${idx}" placeholder="${escapeAttr(lbl.nome)}" value="${escapeAttr(av.observacoes[idx] || '')}">`;
     });
     div.innerHTML = inner;
     grid.appendChild(div);
@@ -952,7 +1294,7 @@ function renderGaleria(){
   const e = currentEnsaio();
   if(!e) return;
   document.getElementById('galeriaTitulo').textContent = e.nome;
-  document.getElementById('galeriaObsHeader').textContent = obsLabels(e).join(' / ');
+  document.getElementById('galeriaObsHeader').textContent = obsLabels(e).map(o=>o.nome).join(' / ');
   renderAvalTabs(e, 'avalTabsGaleria');
   const numAval = state.avaliacaoAtual;
   const labelEl = document.getElementById('galeriaAvalLabel');
@@ -983,11 +1325,13 @@ function renderRelatorio(){
   const labelEl = document.getElementById('relatorioAvalLabel');
   if(labelEl) labelEl.textContent = listaAvaliacoes(e).length > 1 ? `— Avaliação ${numAval}` : '';
   const totalFotos = e.plots.filter(p=> avaliacaoDoPlot(p, numAval).foto).length;
+  const avalAtualObj = listaAvaliacoes(e).find(a=>a.numero===numAval);
+  const daaTexto = avalAtualObj ? formatarDAA(e.aplicacoes, avalAtualObj.data) : '';
 
   let html = `<div class="muted" style="margin-bottom:16px; line-height:1.6;">
     Gerado em ${new Date().toLocaleString('pt-BR')}<br>
     ${e.tratamentos.length} tratamentos × ${e.repeticoes} repetições — ${tipoLabel} — ${e.plots.length} parcelas<br>
-    ${listaAvaliacoes(e).length > 1 ? `Avaliação ${numAval}<br>` : ''}
+    ${listaAvaliacoes(e).length > 1 ? `Avaliação ${numAval}${daaTexto ? ' — ' + daaTexto : ''}<br>` : ''}
     Fotos: ${totalFotos}/${e.plots.length} anexadas
   </div>`;
 
@@ -1004,7 +1348,7 @@ function renderRelatorio(){
   });
   html += `</div>`;
 
-  const obsHeader = obsLabels(e).join(' / ');
+  const obsHeader = obsLabels(e).map(o=>o.nome).join(' / ');
   html += `<h3 style="margin:0 0 8px 0;">Tratamento + Foto</h3>`;
   html += `<table><colgroup><col style="width:4%"><col style="width:5%"><col style="width:21%"><col style="width:44%"><col style="width:26%"></colgroup><thead><tr><th class="vert">Parcela</th><th class="vert">Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th>${obsHeader}</th></tr></thead><tbody>`;
   e.plots.forEach(p=>{
@@ -1014,6 +1358,8 @@ function renderRelatorio(){
       `<td class="obsCell">${obsCellHTML(e, av)}</td></tr>`;
   });
   html += `</tbody></table>`;
+
+  html += renderAnaliseEstatistica(e, numAval);
 
   document.getElementById('relatorioConteudo').innerHTML = html;
 }
@@ -1108,6 +1454,9 @@ async function importEnsaioFile(file){
       if(Array.isArray(imported.avaliacoes) && imported.avaliacoes.length){
         ensaioData.avaliacoes = imported.avaliacoes;
       }
+      if(Array.isArray(imported.aplicacoes) && imported.aplicacoes.length){
+        ensaioData.aplicacoes = imported.aplicacoes;
+      }
       await db.collection('ensaios').doc(id).set(ensaioData);
       const plotsData = imported.plots.map(p=>{
         const plotData = {
@@ -1165,6 +1514,10 @@ document.getElementById('fNumAvaliacoes').addEventListener('input', ()=>{
   const e = currentEnsaio();
   renderAvaliacoesDatas(e ? listaAvaliacoes(e) : null);
 });
+document.getElementById('fNumAplicacoes').addEventListener('input', ()=>{
+  const e = currentEnsaio();
+  renderAplicacoesDatas(e ? e.aplicacoes : null);
+});
 
 // Atualiza só os dados "de superfície" do ensaio (nome, datas das avaliações, campos de
 // observação, colunas/linhas/orientação) sem tocar no sorteio das parcelas já gerado.
@@ -1182,6 +1535,7 @@ document.getElementById('btnAtualizarDados').addEventListener('click', async ()=
   document.querySelectorAll('.avalDataInput').forEach(inp=>{
     avaliacoesSchedule.push({ numero: parseInt(inp.dataset.num), data: inp.value || null });
   });
+  const aplicacoesList = coletarAplicacoes();
 
   // tratamentos/repetições/tipo continuam sendo os já salvos — essa ação nunca reembaralha o croqui
   const totalParcelas = e.tratamentos.length * e.repeticoes;
@@ -1201,7 +1555,7 @@ document.getElementById('btnAtualizarDados').addEventListener('click', async ()=
   }
 
   const dadosAtualizados = {
-    nome, colunas, linhas, orientacao, obsLabels: obsLabelsList, avaliacoes: avaliacoesSchedule,
+    nome, colunas, linhas, orientacao, obsLabels: obsLabelsList, avaliacoes: avaliacoesSchedule, aplicacoes: aplicacoesList,
     atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
   };
 
@@ -1233,6 +1587,7 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
   document.querySelectorAll('.avalDataInput').forEach(inp=>{
     avaliacoesSchedule.push({ numero: parseInt(inp.dataset.num), data: inp.value || null });
   });
+  const aplicacoesList = coletarAplicacoes();
 
   if(tratamentos.length < 2){ alert('Informe pelo menos 2 tratamentos.'); return; }
 
@@ -1266,7 +1621,7 @@ document.getElementById('btnGerar').addEventListener('click', async ()=>{
 
   const id = editingExisting ? state.atualId : db.collection('ensaios').doc().id;
   const ensaioData = {
-    nome, tratamentos, repeticoes: reps, tipo, colunas, linhas, orientacao, frente, obsLabels: obsLabelsList, avaliacoes: avaliacoesSchedule,
+    nome, tratamentos, repeticoes: reps, tipo, colunas, linhas, orientacao, frente, obsLabels: obsLabelsList, avaliacoes: avaliacoesSchedule, aplicacoes: aplicacoesList,
     criadoPor: editingExisting ? state.ensaios[id].criadoPor : state.currentUser.email,
     criadoEm: editingExisting ? (state.ensaios[id].criadoEm || firebase.firestore.FieldValue.serverTimestamp()) : firebase.firestore.FieldValue.serverTimestamp(),
     atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
@@ -1350,6 +1705,8 @@ document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
     const avals = listaAvaliacoes(e);
     document.getElementById('fNumAvaliacoes').value = avals.length;
     renderAvaliacoesDatas(avals);
+    document.getElementById('fNumAplicacoes').value = (e.aplicacoes || []).length;
+    renderAplicacoesDatas(e.aplicacoes);
     updateTipoUI();
     atualizarLabelsFrente();
     document.getElementById('structNote').classList.remove('hidden');
