@@ -277,7 +277,10 @@
 <div id="viewRelatorio" class="card hidden">
   <div class="top no-print" style="margin-bottom:10px;">
     <h2>Relatório — <span id="relatorioTitulo"></span> <span class="muted" id="relatorioAvalLabel"></span></h2>
-    <div style="display:flex; gap:8px;">
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin:0; font-weight:600; cursor:pointer;">
+        <input type="checkbox" id="chkEstatistica" checked style="width:auto; margin:0;"> Análise estatística
+      </label>
       <button class="btn secondary" id="btnVoltarRelatorio">← Voltar ao croqui</button>
       <button class="btn" id="btnImprimirRelatorio">🖨️ Imprimir / Salvar PDF</button>
     </div>
@@ -349,6 +352,7 @@ let state = {
   unsubParcelas: null,
   suppressRender: false,
   avaliacaoAtual: 1,
+  mostrarEstatistica: true,
   pendencias: carregarPendencias()
 };
 
@@ -1196,11 +1200,16 @@ function renderCroqui(){
   if(!e) return;
   document.getElementById('croquiTitulo').textContent = e.nome;
   const tipoLabel = {dic:'Inteiramente casualizado', dbc:'Blocos casualizados', escada:'Casualizado com deslocamento (escada)', manual:'Manual'}[e.tipo];
-  document.getElementById('croquiInfo').textContent =
-    `${e.tratamentos.length} tratamentos × ${e.repeticoes} repetições — ${tipoLabel} — ${e.plots.length} parcelas`;
 
   renderAvalTabs(e);
   const numAval = state.avaliacaoAtual;
+  const avalAtualObjCroqui = listaAvaliacoes(e).find(a=>a.numero===numAval);
+  const daaTextoCroqui = avalAtualObjCroqui ? formatarDAA(e.aplicacoes, avalAtualObjCroqui.data) : '';
+  const infoLinha2 = (listaAvaliacoes(e).length > 1 || daaTextoCroqui)
+    ? ` — Avaliação ${numAval}${avalAtualObjCroqui && avalAtualObjCroqui.data ? ' (' + formatarDataBr(avalAtualObjCroqui.data) + ')' : ''}${daaTextoCroqui ? ' — ' + daaTextoCroqui : ''}`
+    : '';
+  document.getElementById('croquiInfo').textContent =
+    `${e.tratamentos.length} tratamentos × ${e.repeticoes} repetições — ${tipoLabel} — ${e.plots.length} parcelas${infoLinha2}`;
 
   const grid = document.getElementById('croquiGrid');
   grid.style.cssText = gridLayoutCSS(e);
@@ -1327,11 +1336,14 @@ function renderRelatorio(){
   const totalFotos = e.plots.filter(p=> avaliacaoDoPlot(p, numAval).foto).length;
   const avalAtualObj = listaAvaliacoes(e).find(a=>a.numero===numAval);
   const daaTexto = avalAtualObj ? formatarDAA(e.aplicacoes, avalAtualObj.data) : '';
+  const linhaAval = (listaAvaliacoes(e).length > 1 || daaTexto)
+    ? `Avaliação ${numAval}${avalAtualObj && avalAtualObj.data ? ' (' + formatarDataBr(avalAtualObj.data) + ')' : ''}${daaTexto ? ' — ' + daaTexto : ''}<br>`
+    : '';
 
   let html = `<div class="muted" style="margin-bottom:16px; line-height:1.6;">
     Gerado em ${new Date().toLocaleString('pt-BR')}<br>
     ${e.tratamentos.length} tratamentos × ${e.repeticoes} repetições — ${tipoLabel} — ${e.plots.length} parcelas<br>
-    ${listaAvaliacoes(e).length > 1 ? `Avaliação ${numAval}${daaTexto ? ' — ' + daaTexto : ''}<br>` : ''}
+    ${linhaAval}
     Fotos: ${totalFotos}/${e.plots.length} anexadas
   </div>`;
 
@@ -1359,10 +1371,19 @@ function renderRelatorio(){
   });
   html += `</tbody></table>`;
 
-  html += renderAnaliseEstatistica(e, numAval);
+  const chkEstatistica = document.getElementById('chkEstatistica');
+  if(chkEstatistica) chkEstatistica.checked = state.mostrarEstatistica;
+  if(state.mostrarEstatistica){
+    html += renderAnaliseEstatistica(e, numAval);
+  }
 
   document.getElementById('relatorioConteudo').innerHTML = html;
 }
+
+document.getElementById('chkEstatistica').addEventListener('change', (ev)=>{
+  state.mostrarEstatistica = ev.target.checked;
+  if(state.view === 'relatorio') renderRelatorio();
+});
 
 // ---------- admin ----------
 function renderAdmin(){
