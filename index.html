@@ -353,24 +353,91 @@ let state = {
   suppressRender: false,
   avaliacaoAtual: 1,
   mostrarEstatistica: true,
-  pendencias: carregarPendencias()
+  pendencias: {} // preenchido de forma assíncrona a partir do IndexedDB, ver carregarPendenciasAsync()
 };
 
 function uid(){ return 'e' + Date.now() + Math.floor(Math.random()*1000); }
 
 // ---------- fila de pendências (fotos/observações/tratamentos que ainda não confirmaram no servidor) ----------
-// Guarda uma cópia local (localStorage) de cada gravação em andamento. Sobrevive a recarregar a página
-// ou perder conexão no meio do envio — sem isso, uma falha de rede podia perder a foto/observação de vez.
-const PENDENCIAS_KEY = 'avaliacaoEnsaios_pendencias_v1';
+// Guarda uma cópia local de cada gravação em andamento em IndexedDB (não em localStorage — fotos em base64
+// facilmente passam da cota pequena do localStorage, ~5MB, e uma gravação que falha por cota cheia era perdida
+// silenciosamente se o app fosse fechado antes de sincronizar; IndexedDB tem uma cota muito maior).
+// Sobrevive a recarregar a página ou fechar o app/aba no meio do envio.
+const PENDENCIAS_KEY = 'avaliacaoEnsaios_pendencias_v1'; // chave antiga (localStorage) — mantida só para migração
+const PEND_DB_NAME = 'avaliacaoEnsaiosDB';
+const PEND_STORE = 'pendencias';
+let _pendDbPromise = null;
 
-function carregarPendencias(){
-  try{ return JSON.parse(localStorage.getItem(PENDENCIAS_KEY) || '{}'); }
-  catch(err){ return {}; }
+function abrirPendDB(){
+  if(_pendDbPromise) return _pendDbPromise;
+  _pendDbPromise = new Promise((resolve, reject)=>{
+    if(!window.indexedDB){ reject(new Error('IndexedDB indisponível neste navegador')); return; }
+    const req = indexedDB.open(PEND_DB_NAME, 1);
+    req.onupgradeneeded = ()=>{
+      const idb = req.result;
+      if(!idb.objectStoreNames.contains(PEND_STORE)) idb.createObjectStore(PEND_STORE, { keyPath: 'chave' });
+    };
+    req.onsuccess = ()=> resolve(req.result);
+    req.onerror = ()=> reject(req.error);
+  });
+  return _pendDbPromise;
 }
 
-function salvarPendenciasLocal(){
-  try{ localStorage.setItem(PENDENCIAS_KEY, JSON.stringify(state.pendencias)); }
-  catch(err){ console.warn('Não foi possível gravar a fila de pendências localmente:', err); }
+async function gravarPendenciaLocal(chave, dado){
+  try{
+    const idb = await abrirPendDB();
+    await new Promise((resolve, reject)=>{
+      const tx = idb.transaction(PEND_STORE, 'readwrite');
+      tx.objectStore(PEND_STORE).put(Object.assign({ chave }, dado));
+      tx.oncomplete = resolve; tx.onerror = ()=> reject(tx.error);
+    });
+  }catch(err){ console.warn('Não foi possível gravar a pendência localmente (IndexedDB):', err); }
+}
+
+async function removerPendenciaLocal(chave){
+  try{
+    const idb = await abrirPendDB();
+    await new Promise((resolve, reject)=>{
+      const tx = idb.transaction(PEND_STORE, 'readwrite');
+      tx.objectStore(PEND_STORE).delete(chave);
+      tx.oncomplete = resolve; tx.onerror = ()=> reject(tx.error);
+    });
+  }catch(err){ console.warn('Não foi possível remover a pendência localmente (IndexedDB):', err); }
+}
+
+// carrega a fila salva (IndexedDB) e migra automaticamente qualquer pendência que tenha ficado
+// presa na versão antiga baseada em localStorage, para não perder o que já estava na fila
+async function carregarPendenciasAsync(){
+  let fromDB = {};
+  try{
+    const idb = await abrirPendDB();
+    fromDB = await new Promise((resolve, reject)=>{
+      const tx = idb.transaction(PEND_STORE, 'readonly');
+      const req = tx.objectStore(PEND_STORE).getAll();
+      req.onsuccess = ()=>{
+        const out = {};
+        (req.result || []).forEach(item=> out[item.chave] = item);
+        resolve(out);
+      };
+      req.onerror = ()=> reject(req.error);
+    });
+  }catch(err){
+    console.warn('IndexedDB indisponível para a fila de pendências:', err);
+  }
+  try{
+    const legado = JSON.parse(localStorage.getItem(PENDENCIAS_KEY) || '{}');
+    const chavesLegado = Object.keys(legado);
+    if(chavesLegado.length){
+      for(const chave of chavesLegado){
+        if(!fromDB[chave]){
+          fromDB[chave] = legado[chave];
+          gravarPendenciaLocal(chave, legado[chave]);
+        }
+      }
+      localStorage.removeItem(PENDENCIAS_KEY);
+    }
+  }catch(err){ /* sem pendências antigas em localStorage — segue normalmente */ }
+  return fromDB;
 }
 
 function atualizarBadgePendencias(){
@@ -378,15 +445,16 @@ function atualizarBadgePendencias(){
   const el = document.getElementById('badgePendencias');
   if(!el) return;
   el.classList.toggle('hidden', n === 0);
-  el.textContent = `🔄 ${n} pendente${n>1?'s':''} de sincronizar`;
+  el.textContent = `🔄 ${n} pendente${n>1?'s':''} de sincronizar — não saia do app`;
 }
 
 // grava um campo de uma parcela: mostra o valor na hora (otimista), guarda cópia local
 // e só remove da fila de pendências quando o Firestore confirmar a gravação
 function salvarCampoParcela(ensaioId, plotId, campo, valor){
   const chave = `${ensaioId}::${plotId}::${campo}`;
-  state.pendencias[chave] = { ensaioId, plotId, campo, valor, ts: Date.now() };
-  salvarPendenciasLocal();
+  const registro = { ensaioId, plotId, campo, valor, ts: Date.now() };
+  state.pendencias[chave] = registro;
+  gravarPendenciaLocal(chave, registro);
   atualizarBadgePendencias();
   db.collection('ensaios').doc(ensaioId).collection('parcelas').doc(String(plotId))
     .update({ [campo]: valor })
@@ -395,7 +463,7 @@ function salvarCampoParcela(ensaioId, plotId, campo, valor){
       // só remove da fila se nenhuma edição mais nova sobrescreveu esse campo enquanto a gravação estava em andamento
       if(atual && atual.valor === valor){
         delete state.pendencias[chave];
-        salvarPendenciasLocal();
+        removerPendenciaLocal(chave);
         atualizarBadgePendencias();
       }
     })
@@ -416,14 +484,22 @@ async function tentarSincronizarPendencias(){
         .update({ [p.campo]: p.valor });
       if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
         delete state.pendencias[chave];
+        await removerPendenciaLocal(chave);
       }
     }catch(err){
       // continua pendente — tenta de novo na próxima passada
     }
   }
-  salvarPendenciasLocal();
   atualizarBadgePendencias();
 }
+
+// avisa antes de sair/recarregar se ainda houver algo não sincronizado
+window.addEventListener('beforeunload', (ev)=>{
+  if(Object.keys(state.pendencias).length > 0){
+    ev.preventDefault();
+    ev.returnValue = 'Existem fotos/observações ainda não sincronizadas. Se sair agora, elas podem ser perdidas.';
+  }
+});
 
 function shuffle(arr){
   const a = arr.slice();
@@ -966,8 +1042,11 @@ function checkAuthorization(user){
       showScreen('app');
       mostrarLista();
       startEnsaiosListener();
-      atualizarBadgePendencias();
-      tentarSincronizarPendencias();
+      carregarPendenciasAsync().then(p=>{
+        state.pendencias = p;
+        atualizarBadgePendencias();
+        tentarSincronizarPendencias();
+      });
     } else {
       document.getElementById('unauthEmail').textContent = email;
       showScreen('unauthorized');
