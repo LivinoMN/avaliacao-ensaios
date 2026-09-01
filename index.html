@@ -9,6 +9,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Ensaios">
 <link rel="apple-touch-icon" href="icon-192.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{ color-scheme: light; }
   *{box-sizing:border-box;}
@@ -282,6 +283,7 @@
         <input type="checkbox" id="chkEstatistica" checked style="width:auto; margin:0;"> Análise estatística
       </label>
       <button class="btn secondary" id="btnVoltarRelatorio">← Voltar ao croqui</button>
+      <button class="btn secondary" id="btnExportarExcel">📊 Exportar Excel</button>
       <button class="btn" id="btnImprimirRelatorio">🖨️ Imprimir / Salvar PDF</button>
     </div>
   </div>
@@ -1524,6 +1526,53 @@ function exportEnsaio(){
   URL.revokeObjectURL(url);
 }
 
+// exporta os dados de todas as parcelas (todas as avaliações) para uma planilha .xlsx —
+// só os dados (parcela, bloco, tratamento, observações), sem fotos e sem a análise estatística
+function exportarExcel(){
+  const e = currentEnsaio();
+  if(!e) return;
+  if(typeof XLSX === 'undefined'){
+    alert('Não foi possível carregar a biblioteca de exportação. Verifique sua conexão com a internet e tente novamente.');
+    return;
+  }
+  const avals = listaAvaliacoes(e);
+  const labels = obsLabels(e);
+
+  const cabecalho = ['Parcela', 'Bloco/Rep', 'Tratamento'];
+  avals.forEach(a=>{
+    const sufixo = a.data ? ` (${formatarDataBr(a.data)})` : '';
+    labels.forEach(lbl=>{
+      cabecalho.push(`V${a.numero}${sufixo} - ${lbl.nome}`);
+    });
+  });
+
+  const linhas = [cabecalho];
+  e.plots.forEach(p=>{
+    const linha = [p.id, p.bloco || '', p.tratamento];
+    avals.forEach(a=>{
+      const av = avaliacaoDoPlot(p, a.numero);
+      labels.forEach((lbl, idx)=>{
+        const raw = av.observacoes[idx];
+        if(lbl.tipo === 'numero' && raw !== undefined && raw !== null && raw !== ''){
+          const num = parseFloat(String(raw).replace(',', '.'));
+          linha.push(isNaN(num) ? raw : num);
+        } else {
+          linha.push(raw === undefined || raw === null ? '' : raw);
+        }
+      });
+    });
+    linhas.push(linha);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(linhas);
+  ws['!cols'] = cabecalho.map((_, i)=> i < 3 ? { wch: 12 } : { wch: 20 });
+  const wb = XLSX.utils.book_new();
+  const nomeAba = (e.nome || 'Dados').slice(0, 31).replace(/[\\/?*[\]:]/g, ' ');
+  XLSX.utils.book_append_sheet(wb, ws, nomeAba || 'Dados');
+  const safe = (e.nome || 'ensaio').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
+  XLSX.writeFile(wb, `ensaio-${safe}-dados-${Date.now()}.xlsx`);
+}
+
 async function importEnsaioFile(file){
   const reader = new FileReader();
   reader.onload = async (ev)=>{
@@ -1788,6 +1837,7 @@ document.getElementById('btnVoltarRelatorio').addEventListener('click', ()=>{
   renderCroqui();
 });
 document.getElementById('btnImprimirRelatorio').addEventListener('click', ()=> window.print());
+document.getElementById('btnExportarExcel').addEventListener('click', exportarExcel);
 document.getElementById('btnVoltarSetup').addEventListener('click', ()=>{
   const e = currentEnsaio();
   if(e){
