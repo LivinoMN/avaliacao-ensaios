@@ -452,14 +452,30 @@ function atualizarBadgePendencias(){
 
 // grava um campo de uma parcela: mostra o valor na hora (otimista), guarda cópia local
 // e só remove da fila de pendências quando o Firestore confirmar a gravação
+// com persistência offline habilitada, a Promise de .update()/.set() só resolve quando o servidor
+// confirma a gravação — enquanto o dispositivo está offline ela fica pendurada (nem resolve, nem
+// rejeita) por tempo indefinido. comTimeout() garante que a gente desista depois de alguns segundos
+// e trate como "ainda pendente, tenta de novo na próxima passada", em vez de travar para sempre.
+function comTimeout(promise, ms){
+  return new Promise((resolve, reject)=>{
+    const timer = setTimeout(()=> reject(new Error('tempo esgotado ao tentar sincronizar')), ms);
+    promise.then(
+      (v)=>{ clearTimeout(timer); resolve(v); },
+      (err)=>{ clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 function salvarCampoParcela(ensaioId, plotId, campo, valor){
   const chave = `${ensaioId}::${plotId}::${campo}`;
   const registro = { ensaioId, plotId, campo, valor, ts: Date.now() };
   state.pendencias[chave] = registro;
   gravarPendenciaLocal(chave, registro);
   atualizarBadgePendencias();
-  db.collection('ensaios').doc(ensaioId).collection('parcelas').doc(String(plotId))
-    .update({ [campo]: valor })
+  comTimeout(
+    db.collection('ensaios').doc(ensaioId).collection('parcelas').doc(String(plotId)).update({ [campo]: valor }),
+    8000
+  )
     .then(()=>{
       const atual = state.pendencias[chave];
       // só remove da fila se nenhuma edição mais nova sobrescreveu esse campo enquanto a gravação estava em andamento
@@ -475,15 +491,25 @@ function salvarCampoParcela(ensaioId, plotId, campo, valor){
     });
 }
 
+// tenta sincronizar todas as pendências em paralelo (não uma de cada vez!) — com offline persistence,
+// um único item ainda offline pode nunca resolver nem rejeitar sozinho; se fosse sequencial (await em
+// loop), esse item travaria a fila inteira para sempre, mesmo que os outros 223 conseguissem sincronizar.
+// Promise.allSettled + comTimeout garante que cada item tem sua própria chance, sem bloquear os demais.
+let _sincronizandoPendencias = false;
 async function tentarSincronizarPendencias(){
+  if(_sincronizandoPendencias) return; // evita empilhar tentativas simultâneas (ex.: intervalo de 20s + clique no badge)
   const chaves = Object.keys(state.pendencias);
   if(!chaves.length) return;
-  for(const chave of chaves){
+  _sincronizandoPendencias = true;
+  try{
+  await Promise.allSettled(chaves.map(async (chave)=>{
     const p = state.pendencias[chave];
-    if(!p) continue;
+    if(!p) return;
     try{
-      await db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId))
-        .update({ [p.campo]: p.valor });
+      await comTimeout(
+        db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId)).update({ [p.campo]: p.valor }),
+        8000
+      );
       if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
         delete state.pendencias[chave];
         await removerPendenciaLocal(chave);
@@ -491,8 +517,11 @@ async function tentarSincronizarPendencias(){
     }catch(err){
       // continua pendente — tenta de novo na próxima passada
     }
-  }
+  }));
   atualizarBadgePendencias();
+  }finally{
+    _sincronizandoPendencias = false;
+  }
 }
 
 // avisa antes de sair/recarregar se ainda houver algo não sincronizado
