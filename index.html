@@ -1085,9 +1085,9 @@ function renderAnaliseEstatistica(e, numAval){
     html += `</tbody></table>`;
     html += `<div class="muted" style="margin-bottom:10px;">CV = ${fmt(anova.cv,1)}% — Média geral = ${fmt(anova.mediaGeral)} — * significativo a ${alfaTexto}% pelo teste F, ns = não significativo</div>`;
 
-    html += `<table><thead><tr><th>Tratamento</th><th>Média</th><th>Tukey (minúsculas)</th><th>Scott-Knott (maiúsculas)</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>Tratamento</th><th>Média</th><th>Tukey / Scott-Knott</th></tr></thead><tbody>`;
     ordenado.forEach(pt=>{
-      html += `<tr><td>${escapeAttr(pt.tratamento)}</td><td>${fmt(pt.media)}</td><td><b>${pt.letra}</b></td><td><b>${letraSK[pt.tratamento] || '—'}</b></td></tr>`;
+      html += `<tr><td>${escapeAttr(pt.tratamento)}</td><td>${fmt(pt.media)}</td><td><b>${pt.letra} ${letraSK[pt.tratamento] || '—'}</b></td></tr>`;
     });
     html += `</tbody></table>`;
     html += `<div class="muted" style="margin-top:6px;">Tukey (minúsculas, DMS = ${fmt(hsd)}) e Scott-Knott (maiúsculas) a ${alfaTexto}%, rodando sobre os mesmos dados. Em cada teste, médias seguidas de mesma letra não diferem entre si — os agrupamentos de um teste não precisam bater exatamente com os do outro (são métodos diferentes; o Scott-Knott sempre forma grupos que não se sobrepõem, o Tukey pode gerar letras compostas como "ab").</div>`;
