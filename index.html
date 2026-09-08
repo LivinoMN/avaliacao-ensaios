@@ -250,6 +250,7 @@
       <button class="btn secondary" id="btnVoltarSetup">⚙️ Editar configuração</button>
     </div>
   </div>
+  <h2 id="croquiTituloPrint" style="margin:0 0 6px 0;"></h2>
   <div class="muted" id="croquiInfo" style="margin-bottom:10px;"></div>
   <div class="tabs no-print" id="avalTabs"></div>
   <div class="grid" id="croquiGrid"></div>
@@ -281,6 +282,10 @@
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
       <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin:0; font-weight:600; cursor:pointer;">
         <input type="checkbox" id="chkEstatistica" checked style="width:auto; margin:0;"> Análise estatística
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin:0; font-weight:600;">
+        Significância:
+        <input type="number" id="inputAlfaEstatistica" min="0.1" max="20" step="0.1" value="5" style="width:64px; padding:5px 6px;">%
       </label>
       <button class="btn secondary" id="btnVoltarRelatorio">← Voltar ao croqui</button>
       <button class="btn secondary" id="btnExportarExcel">📊 Exportar Excel</button>
@@ -355,6 +360,7 @@ let state = {
   suppressRender: false,
   avaliacaoAtual: 1,
   mostrarEstatistica: true,
+  alfaEstatistica: 5, // % de significância usado por Tukey e Scott-Knott (5% é o padrão agronômico)
   pendencias: {} // preenchido de forma assíncrona a partir do IndexedDB, ver carregarPendenciasAsync()
 };
 
@@ -822,6 +828,40 @@ function qtukey(p,k,v){
   return (lo+hi)/2;
 }
 
+// função gama incompleta regularizada P(a,x) — usada para a distribuição qui-quadrado do teste de Scott-Knott
+// (algoritmo clássico: série para x < a+1, fração continuada para x >= a+1)
+function gammaSeries(a, x){
+  const ITMAX = 200, EPS = 3e-9;
+  if(x <= 0) return 0;
+  let ap = a, sum = 1/a, del = sum;
+  for(let n=1;n<=ITMAX;n++){
+    ap += 1; del *= x/ap; sum += del;
+    if(Math.abs(del) < Math.abs(sum)*EPS) break;
+  }
+  return sum * Math.exp(-x + a*Math.log(x) - logGamma(a));
+}
+function gammaCF(a, x){
+  const ITMAX = 200, EPS = 3e-9, FPMIN = 1e-30;
+  let b = x+1-a, c = 1/FPMIN, d = 1/b, h = d;
+  for(let i=1;i<=ITMAX;i++){
+    const an = -i*(i-a);
+    b += 2;
+    d = an*d+b; if(Math.abs(d)<FPMIN) d=FPMIN;
+    c = b+an/c; if(Math.abs(c)<FPMIN) c=FPMIN;
+    d = 1/d;
+    const del = d*c;
+    h *= del;
+    if(Math.abs(del-1) < EPS) break;
+  }
+  return Math.exp(-x + a*Math.log(x) - logGamma(a)) * h; // Q(a,x), cauda superior
+}
+function gammaP(a, x){
+  if(x < 0 || a <= 0) return NaN;
+  if(x === 0) return 0;
+  return (x < a+1) ? gammaSeries(a, x) : 1 - gammaCF(a, x);
+}
+function chiSqCDF(x, df){ return gammaP(df/2, x/2); }
+
 // coleta os valores numéricos de um campo de observação, para uma avaliação, por parcela
 function coletarDadosAnalise(e, numAval, obsIdx){
   const linhas = [];
@@ -892,12 +932,16 @@ function calcularAnova(linhas, comBloco){
   };
 }
 
-// agrupamento de letras pelo teste de Tukey a 5% (varredura com absorção de subgrupos redundantes)
-function letrasTukey(porTratamento, qmResiduo, glResiduo, repsPorTratamento){
+// agrupamento de letras pelo teste de Tukey (varredura com absorção de subgrupos redundantes).
+// alpha é a significância em fração (0.05 = 5%), configurável na tela de relatório.
+function letrasTukey(porTratamento, qmResiduo, glResiduo, repsPorTratamento, alpha){
+  if(alpha === undefined) alpha = 0.05;
   const t = porTratamento.length;
-  const q = qtukey(0.95, t, glResiduo);
+  const q = qtukey(1 - alpha, t, glResiduo);
   const hsd = q * Math.sqrt(qmResiduo / repsPorTratamento);
-  const ordenado = porTratamento.slice().sort((a,b)=> b.media - a.media);
+  // copia os objetos (não só o array) — evita que a gravação de pt.letra aqui vaze pra outro
+  // teste (ex.: Scott-Knott) que também recebeu a mesma lista de tratamentos da ANOVA
+  const ordenado = porTratamento.map(x=> Object.assign({}, x)).sort((a,b)=> b.media - a.media);
   const grupos = [];
   let i = 0;
   const proximaLetra = (idx)=>{
@@ -919,21 +963,91 @@ function letrasTukey(porTratamento, qmResiduo, glResiduo, repsPorTratamento){
   return { ordenado, hsd, q };
 }
 
+// teste de agrupamento de Scott & Knott (1974): divide recursivamente o grupo de médias em dois
+// (no ponto que maximiza a soma de quadrados entre os dois subgrupos) e testa se essa divisão é
+// estatisticamente significativa via uma aproximação qui-quadrado com graus de liberdade fracionários
+// (g/(π-2)). Ao contrário do Tukey, os grupos resultantes são disjuntos — cada tratamento fica em
+// um único grupo, nunca em dois ao mesmo tempo.
+function melhorSplitScottKnott(medias){
+  const g = medias.length;
+  const total = medias.reduce((s,m)=>s+m, 0);
+  let melhorB0 = -Infinity, melhorI = -1, somaA = 0;
+  for(let i=1;i<g;i++){
+    somaA += medias[i-1];
+    const somaB = total - somaA;
+    const B0 = (somaA*somaA)/i + (somaB*somaB)/(g-i) - (total*total)/g;
+    if(B0 > melhorB0){ melhorB0 = B0; melhorI = i; }
+  }
+  return { B0: melhorB0, i: melhorI };
+}
+function scottKnottRecursivo(grupo, qmResiduo, repsPorTratamento, alpha){
+  const g = grupo.length;
+  if(g <= 1) return [grupo];
+  const medias = grupo.map(x=>x.media);
+  const { B0, i } = melhorSplitScottKnott(medias);
+  // caso degenerado (resíduo ~zero, sem variação natural nos dados): a fórmula usual divide por
+  // qmResiduo e quebra (Infinity/NaN). Nesse caso qualquer diferença real entre médias já é
+  // "infinitamente significativa", então separa sempre que B0 > 0 (médias não são exatamente iguais)
+  if(qmResiduo <= 1e-9){
+    const significativo = B0 > 1e-9;
+    if(significativo){
+      return [
+        ...scottKnottRecursivo(grupo.slice(0,i), qmResiduo, repsPorTratamento, alpha),
+        ...scottKnottRecursivo(grupo.slice(i), qmResiduo, repsPorTratamento, alpha)
+      ];
+    }
+    return [grupo];
+  }
+  const lambda0 = (Math.PI/(2*Math.PI-4)) * (B0 * repsPorTratamento / qmResiduo);
+  const dfChi = g/(Math.PI-2);
+  const p = 1 - chiSqCDF(lambda0, dfChi);
+  if(p < alpha){
+    return [
+      ...scottKnottRecursivo(grupo.slice(0,i), qmResiduo, repsPorTratamento, alpha),
+      ...scottKnottRecursivo(grupo.slice(i), qmResiduo, repsPorTratamento, alpha)
+    ];
+  }
+  return [grupo]; // divisão não é significativa — o grupo inteiro permanece unido
+}
+function letrasScottKnott(porTratamento, qmResiduo, repsPorTratamento, alpha){
+  if(alpha === undefined) alpha = 0.05;
+  // copia os objetos (mesmo motivo do comentário em letrasTukey) — sem isso, o Scott-Knott
+  // sobrescreveria silenciosamente as letras que o Tukey já tinha atribuído aos mesmos objetos
+  const ordenado = porTratamento.map(x=> Object.assign({}, x)).sort((a,b)=> b.media - a.media);
+  const clusters = scottKnottRecursivo(ordenado, qmResiduo, repsPorTratamento, alpha);
+  const proximaLetraMaiuscula = (idx)=>{
+    let s=''; idx++;
+    while(idx>0){ idx--; s = String.fromCharCode(65 + (idx % 26)) + s; idx = Math.floor(idx/26); }
+    return s;
+  };
+  clusters.forEach((cluster, idx)=>{
+    const letra = proximaLetraMaiuscula(idx);
+    cluster.forEach(item=> item.letra = letra);
+  });
+  return { ordenado };
+}
+
 // monta o HTML da seção "Análise estatística" do relatório, um bloco por campo numérico
 function renderAnaliseEstatistica(e, numAval){
   const numericos = obsLabels(e).map((lbl, idx)=> Object.assign({}, lbl, { idx })).filter(l=> l.tipo === 'numero');
   if(!numericos.length){
     return `<h3 style="margin:24px 0 8px 0;">Análise estatística</h3>
-      <div class="muted">Nenhum campo de observação numérico foi cadastrado neste ensaio. Marque um campo como "Numérico" na tela de configuração para habilitar ANOVA e teste de Tukey.</div>`;
+      <div class="muted">Nenhum campo de observação numérico foi cadastrado neste ensaio. Marque um campo como "Numérico" na tela de configuração para habilitar ANOVA, Tukey e Scott-Knott.</div>`;
   }
   const comBloco = e.tipo !== 'dic';
+  // % de significância definido na tela de relatório (padrão 5%); aplica-se à ANOVA (teste F),
+  // ao Tukey e ao Scott-Knott, todos sob o mesmo critério de rigor escolhido pelo usuário
+  let alfaPct = parseFloat(state.alfaEstatistica);
+  if(isNaN(alfaPct) || alfaPct <= 0 || alfaPct > 50) alfaPct = 5;
+  const alfa = alfaPct / 100;
+  const alfaTexto = String(alfaPct).replace('.', ',');
   const fmt = (v, dec)=> (v===null || v===undefined || isNaN(v)) ? '—' : v.toFixed(dec===undefined?2:dec);
   const fmtP = (p)=>{
     if(p===null || p===undefined || isNaN(p)) return '—';
     if(p < 0.0001) return '<0,0001';
     return p.toFixed(4).replace('.',',');
   };
-  const sig = (p)=> (p!==null && p!==undefined && !isNaN(p) && p < 0.05) ? ' *' : (p!==null && p!==undefined && !isNaN(p) ? ' ns' : '');
+  const sig = (p)=> (p!==null && p!==undefined && !isNaN(p) && p < alfa) ? ' *' : (p!==null && p!==undefined && !isNaN(p) ? ' ns' : '');
 
   let html = `<h3 style="margin:24px 0 8px 0;">Análise estatística</h3>`;
   numericos.forEach(campo=>{
@@ -956,7 +1070,10 @@ function renderAnaliseEstatistica(e, numAval){
       html += `<div class="muted">Repetições insuficientes para calcular o resíduo (GL resíduo = ${anova.glResiduo}). São necessárias ao menos 2 repetições.</div></div>`;
       return;
     }
-    const { ordenado, hsd } = letrasTukey(anova.porTratamento, anova.qmResiduo, anova.glResiduo, anova.repsPorTratamento);
+    const { ordenado, hsd } = letrasTukey(anova.porTratamento, anova.qmResiduo, anova.glResiduo, anova.repsPorTratamento, alfa);
+    const scottKnott = letrasScottKnott(anova.porTratamento, anova.qmResiduo, anova.repsPorTratamento, alfa);
+    const letraSK = {};
+    scottKnott.ordenado.forEach(pt=> letraSK[pt.tratamento] = pt.letra);
 
     html += `<table style="margin-bottom:10px;"><thead><tr><th>FV</th><th>GL</th><th>SQ</th><th>QM</th><th>F</th><th>p-valor</th></tr></thead><tbody>`;
     html += `<tr><td>Tratamento</td><td>${anova.glTrat}</td><td>${fmt(anova.sqTrat)}</td><td>${fmt(anova.qmTrat)}</td><td>${fmt(anova.fTrat)}</td><td>${fmtP(anova.pTrat)}${sig(anova.pTrat)}</td></tr>`;
@@ -966,14 +1083,14 @@ function renderAnaliseEstatistica(e, numAval){
     html += `<tr><td>Resíduo</td><td>${anova.glResiduo}</td><td>${fmt(anova.sqResiduo)}</td><td>${fmt(anova.qmResiduo)}</td><td>—</td><td>—</td></tr>`;
     html += `<tr><td>Total</td><td>${anova.glTotal}</td><td>${fmt(anova.sqTotal)}</td><td>—</td><td>—</td><td>—</td></tr>`;
     html += `</tbody></table>`;
-    html += `<div class="muted" style="margin-bottom:10px;">CV = ${fmt(anova.cv,1)}% — Média geral = ${fmt(anova.mediaGeral)} — * significativo a 5% pelo teste F, ns = não significativo</div>`;
+    html += `<div class="muted" style="margin-bottom:10px;">CV = ${fmt(anova.cv,1)}% — Média geral = ${fmt(anova.mediaGeral)} — * significativo a ${alfaTexto}% pelo teste F, ns = não significativo</div>`;
 
-    html += `<table><thead><tr><th>Tratamento</th><th>Média</th><th>Grupo (Tukey 5%)</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>Tratamento</th><th>Média</th><th>Tukey (minúsculas)</th><th>Scott-Knott (maiúsculas)</th></tr></thead><tbody>`;
     ordenado.forEach(pt=>{
-      html += `<tr><td>${escapeAttr(pt.tratamento)}</td><td>${fmt(pt.media)}</td><td><b>${pt.letra}</b></td></tr>`;
+      html += `<tr><td>${escapeAttr(pt.tratamento)}</td><td>${fmt(pt.media)}</td><td><b>${pt.letra}</b></td><td><b>${letraSK[pt.tratamento] || '—'}</b></td></tr>`;
     });
     html += `</tbody></table>`;
-    html += `<div class="muted" style="margin-top:6px;">Médias seguidas de mesma letra não diferem entre si pelo teste de Tukey a 5% (DMS = ${fmt(hsd)}).</div>`;
+    html += `<div class="muted" style="margin-top:6px;">Tukey (minúsculas, DMS = ${fmt(hsd)}) e Scott-Knott (maiúsculas) a ${alfaTexto}%, rodando sobre os mesmos dados. Em cada teste, médias seguidas de mesma letra não diferem entre si — os agrupamentos de um teste não precisam bater exatamente com os do outro (são métodos diferentes; o Scott-Knott sempre forma grupos que não se sobrepõem, o Tukey pode gerar letras compostas como "ab").</div>`;
     html += `</div>`;
   });
   return html;
@@ -1309,6 +1426,7 @@ function renderCroqui(){
   const e = currentEnsaio();
   if(!e) return;
   document.getElementById('croquiTitulo').textContent = e.nome;
+  document.getElementById('croquiTituloPrint').textContent = e.nome;
   const tipoLabel = {dic:'Inteiramente casualizado', dbc:'Blocos casualizados', escada:'Casualizado com deslocamento (escada)', manual:'Manual'}[e.tipo];
 
   renderAvalTabs(e);
@@ -1450,7 +1568,8 @@ function renderRelatorio(){
     ? `Avaliação ${numAval}${avalAtualObj && avalAtualObj.data ? ' (' + formatarDataBr(avalAtualObj.data) + ')' : ''}${daaTexto ? ' — ' + daaTexto : ''}<br>`
     : '';
 
-  let html = `<div class="muted" style="margin-bottom:16px; line-height:1.6;">
+  let html = `<h2 style="margin:0 0 6px 0;">${escapeAttr(e.nome)}</h2>`;
+  html += `<div class="muted" style="margin-bottom:16px; line-height:1.6;">
     Gerado em ${new Date().toLocaleString('pt-BR')}<br>
     ${e.tratamentos.length} tratamentos × ${e.repeticoes} repetições — ${tipoLabel} — ${e.plots.length} parcelas<br>
     ${linhaAval}
@@ -1483,6 +1602,8 @@ function renderRelatorio(){
 
   const chkEstatistica = document.getElementById('chkEstatistica');
   if(chkEstatistica) chkEstatistica.checked = state.mostrarEstatistica;
+  const inputAlfa = document.getElementById('inputAlfaEstatistica');
+  if(inputAlfa && document.activeElement !== inputAlfa) inputAlfa.value = state.alfaEstatistica;
   if(state.mostrarEstatistica){
     html += renderAnaliseEstatistica(e, numAval);
   }
@@ -1492,6 +1613,13 @@ function renderRelatorio(){
 
 document.getElementById('chkEstatistica').addEventListener('change', (ev)=>{
   state.mostrarEstatistica = ev.target.checked;
+  if(state.view === 'relatorio') renderRelatorio();
+});
+document.getElementById('inputAlfaEstatistica').addEventListener('change', (ev)=>{
+  let v = parseFloat(ev.target.value);
+  if(isNaN(v) || v <= 0 || v > 50) v = 5; // valor inválido/fora da faixa — volta pro padrão de 5%
+  state.alfaEstatistica = v;
+  ev.target.value = v;
   if(state.view === 'relatorio') renderRelatorio();
 });
 
