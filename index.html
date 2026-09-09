@@ -510,7 +510,7 @@ function explicarErroPendencia(codigo){
     'deadline-exceeded': 'conexão muito lenta, não respondeu a tempo',
     'unauthenticated': 'sessão expirada — tente sair e entrar de novo',
     'resource-exhausted': 'limite do servidor atingido, tentando de novo automaticamente',
-    'tempo esgotado ao tentar sincronizar': 'sem conexão com a internet'
+    'tempo esgotado ao tentar sincronizar': 'sem resposta do servidor (sem internet OU rede bloqueando o Firebase)'
   };
   return mapa[codigo] || (codigo ? `erro: ${codigo}` : 'ainda tentando pela primeira vez');
 }
@@ -526,6 +526,21 @@ function diagnosticoPendencias(){
   });
   const linhas = Object.entries(contagem).map(([motivo, n])=> `${n}x — ${motivo}`);
   return `Ainda há ${itens.length} pendente(s):\n\n${linhas.join('\n')}`;
+}
+
+// distingue "sem internet de verdade" de "internet ok, mas o Firebase/Google está inacessível"
+// (ex.: rede com filtro de conteúdo bloqueando domínios do Google especificamente) — tenta alcançar
+// um domínio do Firebase com um teste leve e um tempo curto de espera
+async function testarConectividadeGoogle(){
+  try{
+    await comTimeout(
+      fetch('https://firestore.googleapis.com/', { mode: 'no-cors', cache: 'no-store' }),
+      5000
+    );
+    return true;
+  }catch(err){
+    return false;
+  }
 }
 
 // tenta sincronizar todas as pendências em paralelo (não uma de cada vez!) — com offline persistence,
@@ -2088,7 +2103,16 @@ document.getElementById('fileInput').addEventListener('change', (ev)=>{
 document.getElementById('badgePendencias').addEventListener('click', async ()=>{
   await tentarSincronizarPendencias();
   const resumo = diagnosticoPendencias();
-  if(resumo) alert(resumo);
+  if(!resumo) return;
+  const aindaSemResposta = Object.values(state.pendencias).some(p=> p.ultimoErro === 'tempo esgotado ao tentar sincronizar');
+  let extra = '';
+  if(aindaSemResposta){
+    const alcancouGoogle = await testarConectividadeGoogle();
+    extra = alcancouGoogle
+      ? '\n\nTeste extra: o app conseguiu alcançar os servidores do Google agora mesmo. Pode ser uma instabilidade passageira — tente de novo em instantes.'
+      : '\n\nTeste extra: o app NÃO conseguiu alcançar os servidores do Google/Firebase, mesmo que outros sites funcionem nessa rede. Verifique se essa Wi-Fi bloqueia esses domínios (comum em redes com filtro de conteúdo) ou tente outra rede/dados móveis.';
+  }
+  alert(resumo + extra);
 });
 window.addEventListener('online', tentarSincronizarPendencias);
 setInterval(tentarSincronizarPendencias, 20000);
