@@ -493,8 +493,39 @@ function salvarCampoParcela(ensaioId, plotId, campo, valor){
     })
     .catch(err=>{
       console.error(`Gravação de "${campo}" ficou pendente (será reenviada automaticamente):`, err);
+      if(state.pendencias[chave]){
+        state.pendencias[chave].ultimoErro = err && (err.code || err.message) || 'desconhecido';
+        gravarPendenciaLocal(chave, state.pendencias[chave]);
+      }
       atualizarBadgePendencias();
     });
+}
+
+// traduz o erro técnico do Firestore (ou do nosso timeout) pra algo que dá pra entender no campo
+function explicarErroPendencia(codigo){
+  const mapa = {
+    'permission-denied': 'sem permissão para gravar (fale com um admin)',
+    'not-found': 'o ensaio/parcela não existe mais no servidor',
+    'unavailable': 'sem conexão com o servidor',
+    'deadline-exceeded': 'conexão muito lenta, não respondeu a tempo',
+    'unauthenticated': 'sessão expirada — tente sair e entrar de novo',
+    'resource-exhausted': 'limite do servidor atingido, tentando de novo automaticamente',
+    'tempo esgotado ao tentar sincronizar': 'sem conexão com a internet'
+  };
+  return mapa[codigo] || (codigo ? `erro: ${codigo}` : 'ainda tentando pela primeira vez');
+}
+
+// resumo legível de por que a fila ainda não sincronizou — mostrado ao clicar no badge
+function diagnosticoPendencias(){
+  const itens = Object.values(state.pendencias);
+  if(!itens.length) return null;
+  const contagem = {};
+  itens.forEach(p=>{
+    const motivo = explicarErroPendencia(p.ultimoErro);
+    contagem[motivo] = (contagem[motivo] || 0) + 1;
+  });
+  const linhas = Object.entries(contagem).map(([motivo, n])=> `${n}x — ${motivo}`);
+  return `Ainda há ${itens.length} pendente(s):\n\n${linhas.join('\n')}`;
 }
 
 // tenta sincronizar todas as pendências em paralelo (não uma de cada vez!) — com offline persistence,
@@ -521,7 +552,11 @@ async function tentarSincronizarPendencias(){
         await removerPendenciaLocal(chave);
       }
     }catch(err){
-      // continua pendente — tenta de novo na próxima passada
+      // continua pendente — tenta de novo na próxima passada; guarda o motivo pra diagnóstico
+      if(state.pendencias[chave]){
+        state.pendencias[chave].ultimoErro = err && (err.code || err.message) || 'desconhecido';
+        gravarPendenciaLocal(chave, state.pendencias[chave]);
+      }
     }
   }));
   atualizarBadgePendencias();
@@ -2044,7 +2079,11 @@ document.getElementById('fileInput').addEventListener('change', (ev)=>{
   ev.target.value = '';
 });
 
-document.getElementById('badgePendencias').addEventListener('click', tentarSincronizarPendencias);
+document.getElementById('badgePendencias').addEventListener('click', async ()=>{
+  await tentarSincronizarPendencias();
+  const resumo = diagnosticoPendencias();
+  if(resumo) alert(resumo);
+});
 window.addEventListener('online', tentarSincronizarPendencias);
 setInterval(tentarSincronizarPendencias, 20000);
 
