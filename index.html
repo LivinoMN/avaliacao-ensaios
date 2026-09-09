@@ -543,6 +543,20 @@ async function testarConectividadeGoogle(){
   }
 }
 
+// reseta só o cache interno do Firestore (mutation queue/cache local dele), sem tocar na nossa
+// fila própria de pendências (avaliacaoEnsaiosDB, em IndexedDB separado) — usado quando a internet
+// está confirmadamente ok mas as gravações continuam travadas, o que indica que o mecanismo interno
+// de persistência offline do Firestore (não o nosso) ficou num estado preso nesse navegador
+async function resetarCacheFirestore(){
+  try{
+    await db.terminate();
+    await db.clearPersistence();
+  }catch(err){
+    console.warn('Erro ao resetar cache do Firestore (recarregando mesmo assim):', err);
+  }
+  location.reload();
+}
+
 // tenta sincronizar todas as pendências em paralelo (não uma de cada vez!) — com offline persistence,
 // um único item ainda offline pode nunca resolver nem rejeitar sozinho; se fosse sequencial (await em
 // loop), esse item travaria a fila inteira para sempre, mesmo que os outros 223 conseguissem sincronizar.
@@ -2106,13 +2120,22 @@ document.getElementById('badgePendencias').addEventListener('click', async ()=>{
   if(!resumo) return;
   const aindaSemResposta = Object.values(state.pendencias).some(p=> p.ultimoErro === 'tempo esgotado ao tentar sincronizar');
   let extra = '';
+  let ofereceReset = false;
   if(aindaSemResposta){
     const alcancouGoogle = await testarConectividadeGoogle();
-    extra = alcancouGoogle
-      ? '\n\nTeste extra: o app conseguiu alcançar os servidores do Google agora mesmo. Pode ser uma instabilidade passageira — tente de novo em instantes.'
-      : '\n\nTeste extra: o app NÃO conseguiu alcançar os servidores do Google/Firebase, mesmo que outros sites funcionem nessa rede. Verifique se essa Wi-Fi bloqueia esses domínios (comum em redes com filtro de conteúdo) ou tente outra rede/dados móveis.';
+    if(alcancouGoogle){
+      extra = '\n\nTeste extra: o app conseguiu alcançar os servidores do Google agora mesmo, mas as gravações continuam travadas. Isso indica que o mecanismo interno de cache offline do Firestore (não a nossa fila própria) ficou preso nesse navegador.';
+      ofereceReset = true;
+    } else {
+      extra = '\n\nTeste extra: o app NÃO conseguiu alcançar os servidores do Google/Firebase, mesmo que outros sites funcionem nessa rede. Verifique se essa Wi-Fi bloqueia esses domínios (comum em redes com filtro de conteúdo) ou tente outra rede/dados móveis.';
+    }
   }
-  alert(resumo + extra);
+  if(ofereceReset){
+    const quer = confirm(resumo + extra + '\n\nQuer tentar resetar agora esse cache interno do Firestore? Seus dados pendentes NÃO serão apagados (eles ficam guardados separadamente) — só o mecanismo travado do Firestore é reiniciado, e a página recarrega em seguida.');
+    if(quer) resetarCacheFirestore();
+  } else {
+    alert(resumo + extra);
+  }
 });
 window.addEventListener('online', tentarSincronizarPendencias);
 setInterval(tentarSincronizarPendencias, 20000);
