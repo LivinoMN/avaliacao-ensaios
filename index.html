@@ -532,37 +532,43 @@ function diagnosticoPendencias(){
 // um único item ainda offline pode nunca resolver nem rejeitar sozinho; se fosse sequencial (await em
 // loop), esse item travaria a fila inteira para sempre, mesmo que os outros 223 conseguissem sincronizar.
 // Promise.allSettled + comTimeout garante que cada item tem sua própria chance, sem bloquear os demais.
-let _sincronizandoPendencias = false;
-async function tentarSincronizarPendencias(){
-  if(_sincronizandoPendencias) return; // evita empilhar tentativas simultâneas (ex.: intervalo de 20s + clique no badge)
+// guarda a Promise da tentativa em andamento (não só um booleano) — assim, se o usuário clicar no
+// badge enquanto o ciclo automático (20s) já está rodando, a nova chamada "entra na fila" da mesma
+// tentativa em vez de ser descartada silenciosamente; quem chamou (ex.: o diagnóstico) espera o
+// ciclo atual terminar de verdade antes de ler os resultados, em vez de ver dados incompletos.
+let _sincronizacaoEmAndamento = null;
+function tentarSincronizarPendencias(){
+  if(_sincronizacaoEmAndamento) return _sincronizacaoEmAndamento;
   const chaves = Object.keys(state.pendencias);
-  if(!chaves.length) return;
-  _sincronizandoPendencias = true;
-  try{
-  await Promise.allSettled(chaves.map(async (chave)=>{
-    const p = state.pendencias[chave];
-    if(!p) return;
+  if(!chaves.length) return Promise.resolve();
+  _sincronizacaoEmAndamento = (async ()=>{
     try{
-      await comTimeout(
-        db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId)).update({ [p.campo]: p.valor }),
-        8000
-      );
-      if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
-        delete state.pendencias[chave];
-        await removerPendenciaLocal(chave);
-      }
-    }catch(err){
-      // continua pendente — tenta de novo na próxima passada; guarda o motivo pra diagnóstico
-      if(state.pendencias[chave]){
-        state.pendencias[chave].ultimoErro = err && (err.code || err.message) || 'desconhecido';
-        gravarPendenciaLocal(chave, state.pendencias[chave]);
-      }
+      await Promise.allSettled(chaves.map(async (chave)=>{
+        const p = state.pendencias[chave];
+        if(!p) return;
+        try{
+          await comTimeout(
+            db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId)).update({ [p.campo]: p.valor }),
+            8000
+          );
+          if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
+            delete state.pendencias[chave];
+            await removerPendenciaLocal(chave);
+          }
+        }catch(err){
+          // continua pendente — tenta de novo na próxima passada; guarda o motivo pra diagnóstico
+          if(state.pendencias[chave]){
+            state.pendencias[chave].ultimoErro = err && (err.code || err.message) || 'desconhecido';
+            gravarPendenciaLocal(chave, state.pendencias[chave]);
+          }
+        }
+      }));
+      atualizarBadgePendencias();
+    }finally{
+      _sincronizacaoEmAndamento = null;
     }
-  }));
-  atualizarBadgePendencias();
-  }finally{
-    _sincronizandoPendencias = false;
-  }
+  })();
+  return _sincronizacaoEmAndamento;
 }
 
 // avisa antes de sair/recarregar se ainda houver algo não sincronizado
