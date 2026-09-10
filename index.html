@@ -343,6 +343,14 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
+// Em algumas redes (Wi-Fi com proxy/filtro de conteúdo, roteadores de operadora rural, redes de
+// escritório/cooperativa), a conexão "streaming" padrão do Firestore (WebChannel) fica presa
+// indefinidamente mesmo quando um fetch HTTPS comum funciona normalmente — é exatamente o padrão
+// visto nos iPads (testarConectividadeGoogle passa, mas as gravações nunca resolvem nem rejeitam).
+// experimentalAutoDetectLongPolling faz o SDK detectar isso e cair automaticamente para long-polling
+// (uma técnica mais compatível, via requisições HTTP comuns em vez de streaming) quando necessário,
+// sem prejudicar quem está numa rede normal.
+db.settings({ experimentalAutoDetectLongPolling: true });
 db.enablePersistence({ synchronizeTabs: true }).catch(err=> console.warn('Persistência offline não disponível:', err));
 
 let state = {
