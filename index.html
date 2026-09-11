@@ -133,7 +133,7 @@
     <img id="logoHeader" alt="Equalizagro" style="height:42px; display:block; margin-bottom:8px;">
     <h1>Avaliação de Ensaios</h1>
     <div class="muted no-print">Vincule tratamentos a fotos, gere o croqui de campo e confira parcela por parcela.</div>
-    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-04</div>
+    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-05</div>
   </div>
   <div class="no-print" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <span class="muted" id="userInfo"></span>
@@ -495,6 +495,29 @@ function comTimeout(promise, ms){
   });
 }
 
+// re-comprime uma foto já guardada (data URL) pra um tamanho bem menor. Usado quando o Firestore
+// rejeita a gravação por o DOCUMENTO da parcela ter passado do limite de 1MB — o que acontece com
+// ensaios com muitas avaliações, cada uma guardando sua própria foto no mesmo documento. Nesse caso
+// a foto original já foi comprimida na hora da captura (compressImage, largura 500/qualidade 0.7),
+// mas isso não é suficiente quando o documento já está quase cheio com as fotos das avaliações
+// anteriores — reduzir ainda mais essa foto específica libera espaço suficiente na maioria dos casos.
+function reduzirFotoDataUrl(dataUrl, maxW, qualidade){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const scale = Math.min(1, maxW / img.width);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', qualidade));
+    };
+    img.onerror = ()=> reject(new Error('não foi possível reprocessar a foto'));
+    img.src = dataUrl;
+  });
+}
+
 function salvarCampoParcela(ensaioId, plotId, campo, valor){
   const chave = `${ensaioId}::${plotId}::${campo}`;
   const registro = { ensaioId, plotId, campo, valor, ts: Date.now() };
@@ -634,6 +657,40 @@ function tentarSincronizarPendencias(){
               atualizarBadgePendencias();
             }
           }catch(err){
+            // caso comum: ensaio com muitas avaliações, cada uma guardando sua própria foto no MESMO
+            // documento da parcela — depois de algumas avaliações, o documento se aproxima do limite
+            // de 1MB do Firestore e a próxima foto não cabe mais, mesmo já vindo comprimida da captura
+            // (compressImage). Nesse caso específico, reduz essa foto ainda mais (bem mais agressivo)
+            // e tenta regravar UMA vez antes de desistir — resolve a grande maioria dos casos sem
+            // precisar reabrir o app ou tirar a foto de novo.
+            const excedeuTamanho = err && err.code === 'invalid-argument' && /exceeds the maximum allowed size/i.test(err.message || '');
+            const ehFoto = /foto$/i.test(p.campo) && typeof p.valor === 'string' && p.valor.indexOf('data:image') === 0;
+            if(excedeuTamanho && ehFoto && !p._reduzida){
+              try{
+                const menor = await reduzirFotoDataUrl(p.valor, 260, 0.4);
+                p.valor = menor;
+                p._reduzida = true;
+                gravarPendenciaLocal(chave, p);
+                await comTimeout(
+                  db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId)).update({ [p.campo]: menor }),
+                  15000
+                );
+                if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
+                  delete state.pendencias[chave];
+                  await removerPendenciaLocal(chave);
+                  atualizarBadgePendencias();
+                }
+                continue;
+              }catch(err2){
+                if(state.pendencias[chave]){
+                  state.pendencias[chave].ultimoErro = (err2 && (err2.code || err2.message)) || 'desconhecido';
+                  state.pendencias[chave].ultimoErroMsg = (err2 && err2.message) ||
+                    'a foto já foi reduzida bastante, mas o documento dessa parcela continua cheio (acumulou fotos de várias avaliações) — precisa de ajuste manual (ex.: mover fotos antigas pra fora do documento).';
+                  gravarPendenciaLocal(chave, state.pendencias[chave]);
+                }
+                continue;
+              }
+            }
             // continua pendente — tenta de novo na próxima passada; guarda o motivo pra diagnóstico
             // (código E mensagem — a mensagem do Firestore costuma dizer exatamente qual campo/valor
             // foi rejeitado, essencial pra diagnosticar erros permanentes como invalid-argument)
@@ -1917,14 +1974,19 @@ function compressImage(file, cb){
   reader.onload = (e)=>{
     const img = new Image();
     img.onload = ()=>{
-      const maxW = 500;
+      // largura/qualidade reduzidas (era 500px/0.7) em 11/09/2026: ensaios com muitas avaliações
+      // guardam uma foto por avaliação NO MESMO documento da parcela, e o Firestore tem um limite de
+      // 1MB por documento — com fotos maiores, esse limite é alcançado já na 4ª-5ª avaliação. Isso
+      // ainda não resolve o limite de forma definitiva (ver nota em documentacao-tecnica.md sobre
+      // mover fotos pra fora do documento da parcela), mas dá mais margem antes de bater no limite.
+      const maxW = 420;
       const scale = Math.min(1, maxW / img.width);
       const canvas = document.createElement('canvas');
       canvas.width = img.width * scale;
       canvas.height = img.height * scale;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      cb(canvas.toDataURL('image/jpeg', 0.7));
+      cb(canvas.toDataURL('image/jpeg', 0.6));
     };
     img.src = e.target.result;
   };
