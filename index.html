@@ -133,7 +133,7 @@
     <img id="logoHeader" alt="Equalizagro" style="height:42px; display:block; margin-bottom:8px;">
     <h1>Avaliação de Ensaios</h1>
     <div class="muted no-print">Vincule tratamentos a fotos, gere o croqui de campo e confira parcela por parcela.</div>
-    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-03</div>
+    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-04</div>
   </div>
   <div class="no-print" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <span class="muted" id="userInfo"></span>
@@ -549,7 +549,19 @@ function diagnosticoPendencias(){
     contagem[motivo] = (contagem[motivo] || 0) + 1;
   });
   const linhas = Object.entries(contagem).map(([motivo, n])=> `${n}x — ${motivo}`);
-  return `Ainda há ${itens.length} pendente(s):\n\n${linhas.join('\n')}`;
+  // erros permanentes (não resolvem tentando de novo) — mostra exemplos concretos (ensaio/parcela/
+  // campo + mensagem original do Firestore) pra dar pra identificar o dado problemático sem precisar
+  // de acesso ao console do navegador do aparelho
+  const CODIGOS_PERMANENTES = ['invalid-argument', 'not-found', 'permission-denied'];
+  const permanentes = itens.filter(p=> CODIGOS_PERMANENTES.includes(p.ultimoErro));
+  let detalhe = '';
+  if(permanentes.length){
+    const exemplos = permanentes.slice(0, 5).map(p=>
+      `- ensaio ${p.ensaioId} · parcela ${p.plotId} · campo "${p.campo}"${p.ultimoErroMsg ? ' · ' + p.ultimoErroMsg : ''}`
+    );
+    detalhe = `\n\nEsses erros são permanentes — não vão resolver tentando de novo. Exemplo${permanentes.length>1?'s':''} (${Math.min(5,permanentes.length)} de ${permanentes.length}):\n${exemplos.join('\n')}`;
+  }
+  return `Ainda há ${itens.length} pendente(s):\n\n${linhas.join('\n')}${detalhe}`;
 }
 
 // distingue "sem internet de verdade" de "internet ok, mas o Firebase/Google está inacessível"
@@ -623,8 +635,11 @@ function tentarSincronizarPendencias(){
             }
           }catch(err){
             // continua pendente — tenta de novo na próxima passada; guarda o motivo pra diagnóstico
+            // (código E mensagem — a mensagem do Firestore costuma dizer exatamente qual campo/valor
+            // foi rejeitado, essencial pra diagnosticar erros permanentes como invalid-argument)
             if(state.pendencias[chave]){
               state.pendencias[chave].ultimoErro = err && (err.code || err.message) || 'desconhecido';
+              state.pendencias[chave].ultimoErroMsg = (err && err.message) || '';
               gravarPendenciaLocal(chave, state.pendencias[chave]);
             }
           }
