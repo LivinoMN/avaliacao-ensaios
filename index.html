@@ -133,7 +133,7 @@
     <img id="logoHeader" alt="Equalizagro" style="height:42px; display:block; margin-bottom:8px;">
     <h1>Avaliação de Ensaios</h1>
     <div class="muted no-print">Vincule tratamentos a fotos, gere o croqui de campo e confira parcela por parcela.</div>
-    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-12</div>
+    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-13</div>
   </div>
   <div class="no-print" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <span class="muted" id="userInfo"></span>
@@ -380,6 +380,7 @@ let state = {
   userRole: null,
   unsubEnsaios: null,
   unsubParcelas: null,
+  unsubFotos: null,
   suppressRender: false,
   avaliacaoAtual: 1,
   mostrarEstatistica: true,
@@ -517,6 +518,26 @@ function reduzirFotoDataUrl(dataUrl, maxW, qualidade){
   });
 }
 
+// regex do "campo" de pendência que identifica uma foto de avaliação, ex.: "avaliacoes.3.foto"
+const REGEX_CAMPO_FOTO = /^avaliacoes\.(\d+)\.foto$/;
+
+// ponto único que decide ONDE no Firestore uma gravação de pendência realmente acontece — usado
+// tanto pela primeira tentativa (salvarCampoParcela) quanto pelas tentativas de novo
+// (tentarSincronizarPendencias), pra nunca ter dois lugares com lógica de roteamento divergente.
+// Fotos de avaliação (11/09/2026): vão pra coleção própria ensaios/{id}/fotos/{plotId}_{numero} —
+// nunca mais pro documento da parcela — porque documentos com fotos de várias avaliações inline
+// bateram no limite de 1MB do Firestore em produção (ver documentacao-tecnica.md). Tudo o resto
+// (tratamento, observações) continua indo pro documento da parcela como sempre.
+function gravarNoFirestore(ensaioId, plotId, campo, valor){
+  const m = REGEX_CAMPO_FOTO.exec(campo);
+  if(m){
+    const numero = parseInt(m[1], 10);
+    return db.collection('ensaios').doc(ensaioId).collection('fotos').doc(`${plotId}_${numero}`)
+      .set({ plotId: Number(plotId), numero, foto: valor, atualizadoEm: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+  }
+  return db.collection('ensaios').doc(ensaioId).collection('parcelas').doc(String(plotId)).update({ [campo]: valor });
+}
+
 function salvarCampoParcela(ensaioId, plotId, campo, valor){
   const chave = `${ensaioId}::${plotId}::${campo}`;
   const registro = { ensaioId, plotId, campo, valor, ts: Date.now() };
@@ -524,7 +545,7 @@ function salvarCampoParcela(ensaioId, plotId, campo, valor){
   gravarPendenciaLocal(chave, registro);
   atualizarBadgePendencias();
   comTimeout(
-    db.collection('ensaios').doc(ensaioId).collection('parcelas').doc(String(plotId)).update({ [campo]: valor }),
+    gravarNoFirestore(ensaioId, plotId, campo, valor),
     8000
   )
     .then(()=>{
@@ -668,7 +689,7 @@ function tentarSincronizarPendencias(){
           if(!p) continue;
           try{
             await comTimeout(
-              db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId)).update({ [p.campo]: p.valor }),
+              gravarNoFirestore(p.ensaioId, p.plotId, p.campo, p.valor),
               15000
             );
             if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
@@ -753,7 +774,12 @@ function normalizarPlot(p){
   return p;
 }
 
-function avaliacaoDoPlot(p, num){
+// Fotos de avaliação (11/09/2026): moradas fora do documento da parcela, numa coleção própria
+// (ensaios/{id}/fotos/{plotId}_{numero}) — ver documentacao-tecnica.md seção sobre o limite de 1MB
+// do Firestore. `e.fotosMap` é preenchido por `listenFotos()` e tem prioridade; se não houver entrada
+// lá, cai pro `foto` antigo guardado dentro do próprio documento da parcela (fotos capturadas antes
+// dessa mudança continuam funcionando, sem precisar de nenhuma migração).
+function avaliacaoDoPlot(e, p, num){
   normalizarPlot(p);
   if(!p.avaliacoes[num]) p.avaliacoes[num] = { foto: null, observacoes: {} };
   const av = p.avaliacoes[num];
@@ -761,6 +787,9 @@ function avaliacaoDoPlot(p, num){
   if(!av.observacoes || typeof av.observacoes !== 'object' || Array.isArray(av.observacoes)){
     av.observacoes = { 0: av.observacao || '' };
   }
+  const fotosMap = e && e.fotosMap;
+  const fotoExterna = fotosMap ? fotosMap[`${p.id}_${num}`] : undefined;
+  if(fotoExterna !== undefined) return Object.assign({}, av, { foto: fotoExterna || null });
   return av;
 }
 
@@ -1055,7 +1084,7 @@ function coletarDadosAnalise(e, numAval, obsIdx){
   const linhas = [];
   let faltando = 0;
   e.plots.forEach(p=>{
-    const av = avaliacaoDoPlot(p, numAval);
+    const av = avaliacaoDoPlot(e, p, numAval);
     const raw = av.observacoes[obsIdx];
     const val = (raw === undefined || raw === null || raw === '') ? null : parseFloat(String(raw).replace(',','.'));
     if(val === null || isNaN(val)){ faltando++; return; }
@@ -1422,6 +1451,26 @@ function listenParcelas(ensaioId){
   }, err=> console.error('Erro ao ouvir parcelas:', err));
 }
 
+// ouve a coleção separada de fotos do ensaio (ensaios/{id}/fotos/{plotId}_{numero}) — ver
+// avaliacaoDoPlot() e gravarNoFirestore() pra entender por que fotos não ficam mais dentro do
+// documento da parcela. Popula e.fotosMap, consultado por avaliacaoDoPlot em toda leitura de foto.
+function listenFotos(ensaioId){
+  if(state.unsubFotos) state.unsubFotos();
+  state.unsubFotos = db.collection('ensaios').doc(ensaioId).collection('fotos').onSnapshot(snap=>{
+    const mapa = {};
+    snap.forEach(d=>{
+      const dado = d.data();
+      mapa[`${dado.plotId}_${dado.numero}`] = dado.foto || null;
+    });
+    if(state.ensaios[ensaioId]) state.ensaios[ensaioId].fotosMap = mapa;
+    if(state.atualId === ensaioId && !state.suppressRender){
+      if(state.view === 'croqui') renderCroqui();
+      else if(state.view === 'galeria') renderGaleria();
+      else if(state.view === 'relatorio') renderRelatorio();
+    }
+  }, err=> console.error('Erro ao ouvir fotos:', err));
+}
+
 // grava as parcelas em vários lotes pequenos — cada parcela pode carregar fotos em base64
 // de várias avaliações, e o Firestore rejeita um commit cujo tamanho total passe de ~10MB
 async function commitPlotsInChunks(ensaioId, plots){
@@ -1442,6 +1491,28 @@ async function commitPlotsInChunks(ensaioId, plots){
   if(ops > 0) await batch.commit();
 }
 
+// grava em lote as fotos de um ensaio importado (imported.fotosMap, formato "{plotId}_{numero}": dataUrl)
+// na coleção separada ensaios/{id}/fotos — nunca de volta pro documento da parcela, pelo mesmo motivo
+// de sempre (limite de 1MB por documento do Firestore).
+async function commitFotosInChunks(ensaioId, fotosMap){
+  const entradas = Object.entries(fotosMap || {}).filter(([_, foto])=> !!foto);
+  if(!entradas.length) return;
+  const MAX_OPS = 400;
+  let batch = db.batch();
+  let ops = 0;
+  for(const [chave, foto] of entradas){
+    const [plotIdStr, numeroStr] = chave.split('_');
+    const plotId = parseInt(plotIdStr, 10);
+    const numero = parseInt(numeroStr, 10);
+    if(isNaN(plotId) || isNaN(numero)) continue;
+    const ref = db.collection('ensaios').doc(ensaioId).collection('fotos').doc(`${plotId}_${numero}`);
+    batch.set(ref, { plotId, numero, foto, atualizadoEm: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    ops++;
+    if(ops >= MAX_OPS){ await batch.commit(); batch = db.batch(); ops = 0; }
+  }
+  if(ops > 0) await batch.commit();
+}
+
 async function deleteEnsaio(id){
   try{
     const parcelasSnap = await db.collection('ensaios').doc(id).collection('parcelas').get();
@@ -1456,6 +1527,7 @@ async function deleteEnsaio(id){
 // ---------- rendering ----------
 function mostrarLista(){
   if(state.unsubParcelas){ state.unsubParcelas(); state.unsubParcelas = null; }
+  if(state.unsubFotos){ state.unsubFotos(); state.unsubFotos = null; }
   state.atualId = null;
   showView('lista');
   renderListaEnsaios();
@@ -1504,15 +1576,18 @@ function renderListaEnsaios(){
 function abrirEnsaio(id){
   state.atualId = id;
   const e = state.ensaios[id];
+  if(!e.fotosMap) e.fotosMap = {};
   state.editMode = e.tipo === 'manual';
   state.avaliacaoAtual = 1;
   showView('croqui');
   listenParcelas(id);
+  listenFotos(id);
   renderCroqui();
 }
 
 function novoEnsaio(){
   if(state.unsubParcelas){ state.unsubParcelas(); state.unsubParcelas = null; }
+  if(state.unsubFotos){ state.unsubFotos(); state.unsubFotos = null; }
   state.atualId = null;
   state.editMode = false;
   state.colunasTouched = false;
@@ -1635,7 +1710,7 @@ function renderCroqui(){
   document.getElementById('btnEditar').textContent = state.editMode ? '✅ Concluir edição' : '✏️ Ativar edição manual';
 
   e.plots.forEach(p=>{
-    const av = avaliacaoDoPlot(p, numAval);
+    const av = avaliacaoDoPlot(e, p, numAval);
     const div = document.createElement('div');
     div.className = 'plot';
     div.style.background = colorFor(p.tratamento, e.tratamentos);
@@ -1695,7 +1770,7 @@ function renderCroqui(){
       const plotId = parseInt(inp.dataset.plot);
       const idx = inp.dataset.idx;
       const plot = e.plots.find(pp=>pp.id===plotId);
-      if(plot) avaliacaoDoPlot(plot, numAval).observacoes[idx] = inp.value;
+      if(plot) avaliacaoDoPlot(e, plot, numAval).observacoes[idx] = inp.value;
     });
     inp.addEventListener('blur', ()=>{
       state.suppressRender = false;
@@ -1727,7 +1802,7 @@ function renderGaleria(){
   const tbody = document.querySelector('#galeriaTable tbody');
   tbody.innerHTML = '';
   e.plots.forEach(p=>{
-    const av = avaliacaoDoPlot(p, numAval);
+    const av = avaliacaoDoPlot(e, p, numAval);
     const tr = document.createElement('tr');
     tr.innerHTML = `<td class="vert">#${p.id}</td><td class="vert">${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
       `<td>${av.foto ? `<img src="${av.foto}" data-src="${av.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
@@ -1749,7 +1824,7 @@ function renderRelatorio(){
   const numAval = state.avaliacaoAtual;
   const labelEl = document.getElementById('relatorioAvalLabel');
   if(labelEl) labelEl.textContent = listaAvaliacoes(e).length > 1 ? `— Avaliação ${numAval}` : '';
-  const totalFotos = e.plots.filter(p=> avaliacaoDoPlot(p, numAval).foto).length;
+  const totalFotos = e.plots.filter(p=> avaliacaoDoPlot(e, p, numAval).foto).length;
   const avalAtualObj = listaAvaliacoes(e).find(a=>a.numero===numAval);
   const daaTexto = avalAtualObj ? formatarDAA(e.aplicacoes, avalAtualObj.data) : '';
   const linhaAval = (listaAvaliacoes(e).length > 1 || daaTexto)
@@ -1767,7 +1842,7 @@ function renderRelatorio(){
   html += `<h3 style="margin:0 0 8px 0;">Croqui de campo</h3>`;
   html += `<div class="grid" style="${gridLayoutCSS(e)} margin-bottom:22px;">`;
   e.plots.forEach(p=>{
-    const av = avaliacaoDoPlot(p, numAval);
+    const av = avaliacaoDoPlot(e, p, numAval);
     html += `<div class="plot" style="background:${colorFor(p.tratamento, e.tratamentos)};">
       <div class="num">#${p.id}${p.bloco ? ' · Bloco '+p.bloco : ''}</div>
       <div class="trt">${p.tratamento}</div>
@@ -1781,7 +1856,7 @@ function renderRelatorio(){
   html += `<h3 style="margin:0 0 8px 0;">Tratamento + Foto</h3>`;
   html += `<table><colgroup><col style="width:4%"><col style="width:5%"><col style="width:21%"><col style="width:44%"><col style="width:26%"></colgroup><thead><tr><th class="vert">Parcela</th><th class="vert">Bloco/Rep</th><th>Tratamento</th><th>Foto</th><th>${obsHeader}</th></tr></thead><tbody>`;
   e.plots.forEach(p=>{
-    const av = avaliacaoDoPlot(p, numAval);
+    const av = avaliacaoDoPlot(e, p, numAval);
     html += `<tr><td class="vert">#${p.id}</td><td class="vert">${p.bloco || '-'}</td><td>${p.tratamento}</td>` +
       `<td>${av.foto ? `<img src="${av.foto}">` : '<span class="muted">sem foto</span>'}</td>` +
       `<td class="obsCell">${obsCellHTML(e, av)}</td></tr>`;
@@ -1895,7 +1970,7 @@ function exportarExcel(){
   e.plots.forEach(p=>{
     const linha = [p.id, p.bloco || '', p.tratamento];
     avals.forEach(a=>{
-      const av = avaliacaoDoPlot(p, a.numero);
+      const av = avaliacaoDoPlot(e, p, a.numero);
       labels.forEach((lbl, idx)=>{
         const raw = av.observacoes[idx];
         if(lbl.tipo === 'numero' && raw !== undefined && raw !== null && raw !== ''){
@@ -1968,6 +2043,13 @@ async function importEnsaioFile(file){
         return plotData;
       });
       await commitPlotsInChunks(id, plotsData);
+      // ensaios exportados a partir de 11/09/2026 trazem as fotos separadas em imported.fotosMap
+      // (formato "{plotId}_{numero}": dataUrl) em vez de inline em avaliacoes[n].foto — grava na
+      // coleção própria, não no documento da parcela. Exportações antigas (sem fotosMap) continuam
+      // funcionando normalmente pelo caminho inline acima (plotData.avaliacoes).
+      if(imported.fotosMap && typeof imported.fotosMap === 'object'){
+        await commitFotosInChunks(id, imported.fotosMap);
+      }
       alert('Ensaio importado com sucesso.');
       abrirEnsaio(id);
     }catch(err){ alert('Erro ao importar: ' + err.message); }
@@ -2230,7 +2312,13 @@ document.getElementById('fileInput').addEventListener('change', (ev)=>{
     const e = currentEnsaio();
     const plot = e.plots.find(p=>p.id === state.pendingPlotId);
     const numAval = state.avaliacaoAtual;
-    if(plot) avaliacaoDoPlot(plot, numAval).foto = dataUrl;
+    if(plot){
+      // atualização otimista: guarda direto no fotosMap em memória (fonte que avaliacaoDoPlot
+      // consulta primeiro) — não escreve mais dentro do objeto avaliacoes[num] do próprio plot,
+      // pra foto NUNCA mais engordar o documento da parcela (ver seção sobre o limite de 1MB)
+      if(!e.fotosMap) e.fotosMap = {};
+      e.fotosMap[`${plot.id}_${numAval}`] = dataUrl;
+    }
     renderCroqui();
     salvarCampoParcela(e.id, state.pendingPlotId, `avaliacoes.${numAval}.foto`, dataUrl);
   });
