@@ -133,7 +133,7 @@
     <img id="logoHeader" alt="Equalizagro" style="height:42px; display:block; margin-bottom:8px;">
     <h1>Avaliação de Ensaios</h1>
     <div class="muted no-print">Vincule tratamentos a fotos, gere o croqui de campo e confira parcela por parcela.</div>
-    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-02</div>
+    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-03</div>
   </div>
   <div class="no-print" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <span class="muted" id="userInfo"></span>
@@ -590,32 +590,48 @@ async function resetarCacheFirestore(){
 // tentativa em vez de ser descartada silenciosamente; quem chamou (ex.: o diagnóstico) espera o
 // ciclo atual terminar de verdade antes de ler os resultados, em vez de ver dados incompletos.
 let _sincronizacaoEmAndamento = null;
+// Limite de sincronizações simultâneas. Disparar TODOS os itens pendentes em paralelo (como era antes)
+// funciona bem numa conexão rápida, mas numa rede rural/limitada, lançar 100+ uploads de foto (base64,
+// ~30-100KB cada) ao mesmo tempo divide a banda entre todos e faz CADA UM deles ficar lento — na
+// prática, todos passam de 8s e são marcados como "tempo esgotado", travando pra sempre em loop
+// (a mesma inundação se repete a cada tentativa). Por isso processamos em um "pool" de W workers: cada
+// um pega um item por vez de uma fila compartilhada, então nunca há mais que MAX_SYNC_CONCORRENTE
+// uploads competindo pela banda ao mesmo tempo — rápido o suficiente para não travar tudo (como no bug
+// antigo, sequencial 1 a 1), mas sem saturar conexões limitadas (como acontecia com paralelismo total).
+const MAX_SYNC_CONCORRENTE = 4;
 function tentarSincronizarPendencias(){
   if(_sincronizacaoEmAndamento) return _sincronizacaoEmAndamento;
   const chaves = Object.keys(state.pendencias);
   if(!chaves.length) return Promise.resolve();
   _sincronizacaoEmAndamento = (async ()=>{
     try{
-      await Promise.allSettled(chaves.map(async (chave)=>{
-        const p = state.pendencias[chave];
-        if(!p) return;
-        try{
-          await comTimeout(
-            db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId)).update({ [p.campo]: p.valor }),
-            8000
-          );
-          if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
-            delete state.pendencias[chave];
-            await removerPendenciaLocal(chave);
-          }
-        }catch(err){
-          // continua pendente — tenta de novo na próxima passada; guarda o motivo pra diagnóstico
-          if(state.pendencias[chave]){
-            state.pendencias[chave].ultimoErro = err && (err.code || err.message) || 'desconhecido';
-            gravarPendenciaLocal(chave, state.pendencias[chave]);
+      let indice = 0;
+      async function processarProximo(){
+        while(indice < chaves.length){
+          const chave = chaves[indice++];
+          const p = state.pendencias[chave];
+          if(!p) continue;
+          try{
+            await comTimeout(
+              db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId)).update({ [p.campo]: p.valor }),
+              15000
+            );
+            if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
+              delete state.pendencias[chave];
+              await removerPendenciaLocal(chave);
+              atualizarBadgePendencias();
+            }
+          }catch(err){
+            // continua pendente — tenta de novo na próxima passada; guarda o motivo pra diagnóstico
+            if(state.pendencias[chave]){
+              state.pendencias[chave].ultimoErro = err && (err.code || err.message) || 'desconhecido';
+              gravarPendenciaLocal(chave, state.pendencias[chave]);
+            }
           }
         }
-      }));
+      }
+      const workers = Array.from({ length: Math.min(MAX_SYNC_CONCORRENTE, chaves.length) }, ()=> processarProximo());
+      await Promise.allSettled(workers);
       atualizarBadgePendencias();
     }finally{
       _sincronizacaoEmAndamento = null;
