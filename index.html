@@ -133,7 +133,7 @@
     <img id="logoHeader" alt="Equalizagro" style="height:42px; display:block; margin-bottom:8px;">
     <h1>Avaliação de Ensaios</h1>
     <div class="muted no-print">Vincule tratamentos a fotos, gere o croqui de campo e confira parcela por parcela.</div>
-    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-11</div>
+    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-12</div>
   </div>
   <div class="no-print" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <span class="muted" id="userInfo"></span>
@@ -495,12 +495,11 @@ function comTimeout(promise, ms){
   });
 }
 
-// re-comprime uma foto já guardada (data URL) pra um tamanho bem menor. Usado quando o Firestore
-// rejeita a gravação por o DOCUMENTO da parcela ter passado do limite de 1MB — o que acontece com
-// ensaios com muitas avaliações, cada uma guardando sua própria foto no mesmo documento. Nesse caso
-// a foto original já foi comprimida na hora da captura (compressImage, largura 500/qualidade 0.7),
-// mas isso não é suficiente quando o documento já está quase cheio com as fotos das avaliações
-// anteriores — reduzir ainda mais essa foto específica libera espaço suficiente na maioria dos casos.
+// re-comprime uma foto já guardada (data URL) pra um tamanho bem menor.
+// AVISO (11/09/2026): NÃO chamar isso automaticamente na fila de sincronização — foi usado assim
+// antes e destruiu fotos de campo (reduzia até 6px de largura só pra "resolver" a pendência, sem
+// avisar ninguém). Deixado aqui só pra uma eventual função futura onde o USUÁRIO decide, vendo antes
+// e depois, se aceita perder qualidade pra sincronizar uma foto específica que não cabe.
 function reduzirFotoDataUrl(dataUrl, maxW, qualidade){
   return new Promise((resolve, reject)=>{
     const img = new Image();
@@ -681,49 +680,21 @@ function tentarSincronizarPendencias(){
             // caso comum: ensaio com muitas avaliações, cada uma guardando sua própria foto no MESMO
             // documento da parcela — depois de algumas avaliações, o documento se aproxima do limite
             // de 1MB do Firestore e a próxima foto não cabe mais, mesmo já vindo comprimida da captura
-            // (compressImage). Nesse caso específico, reduz essa foto em degraus cada vez mais
-            // agressivos e tenta regravar antes de desistir — resolve a grande maioria dos casos sem
-            // precisar reabrir o app ou tirar a foto de novo.
-            // IMPORTANTE: NÃO usar uma flag persistida (tipo "já tentei, não tenta de novo") pra
-            // decidir se entra aqui — pendências antigas de uma versão anterior deste código (que só
-            // tentava reduzir uma vez, com um degrau só) já ficaram marcadas como "já tentado" no
-            // IndexedDB do aparelho, e essa marca sobrevive a atualizações de código. Se a gente
-            // checasse isso, itens antigos ficariam presos pra sempre mesmo depois de melhorar a
-            // lógica de redução — é sempre seguro tentar de novo aqui, o custo é só alguns segundos.
+            // (compressImage).
+            // IMPORTANTE (11/09/2026): este código ANTES reduzia a foto automaticamente em degraus
+            // (até 6px de largura!) até caber, sem avisar ninguém — isso "resolvia" a pendência mas
+            // destruía a foto de verdade (fotos de campo minúsculas e inúteis pra qualquer análise
+            // visual). Removido de propósito. NÃO reintroduzir uma redução automática/silenciosa
+            // aqui — se uma foto não cabe, é melhor deixar pendente (avisando o usuário) do que trocar
+            // silenciosamente por uma versão degradada. A correção de verdade é tirar as fotos de
+            // dentro do documento da parcela (ver tarefa registrada), não comprimir cada vez mais.
             const excedeuTamanho = err && err.code === 'invalid-argument' && /exceeds the maximum allowed size/i.test(err.message || '');
             const ehFoto = /foto$/i.test(p.campo) && typeof p.valor === 'string' && p.valor.indexOf('data:image') === 0;
-            if(excedeuTamanho && ehFoto){
-              // ensaios com muitas avaliações acumuladas deixam cada vez menos espaço sobrando no
-              // documento — uma redução fixa pode não bastar. Tenta em degraus cada vez mais agressivos
-              // até caber ou esgotar as tentativas.
-              const DEGRAUS = [ {w:260,q:0.4}, {w:180,q:0.3}, {w:120,q:0.25}, {w:80,q:0.2}, {w:60,q:0.15}, {w:40,q:0.1}, {w:24,q:0.08}, {w:16,q:0.05}, {w:10,q:0.05}, {w:6,q:0.01} ];
-              const original = p.valor; // sempre reduz a partir do original — nunca em cima de uma versão já reduzida
-              let sucesso = false, ultimoErr = null;
-              for(const {w,q} of DEGRAUS){
-                try{
-                  const menor = await reduzirFotoDataUrl(original, w, q);
-                  await comTimeout(
-                    db.collection('ensaios').doc(p.ensaioId).collection('parcelas').doc(String(p.plotId)).update({ [p.campo]: menor }),
-                    15000
-                  );
-                  p.valor = menor;
-                  sucesso = true;
-                  if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
-                    delete state.pendencias[chave];
-                    await removerPendenciaLocal(chave);
-                    atualizarBadgePendencias();
-                  }
-                  break;
-                }catch(err2){
-                  ultimoErr = err2;
-                }
-              }
-              if(!sucesso && state.pendencias[chave]){
-                state.pendencias[chave].ultimoErro = (ultimoErr && (ultimoErr.code || ultimoErr.message)) || 'desconhecido';
-                state.pendencias[chave].ultimoErroMsg = (ultimoErr && ultimoErr.message) ||
-                  'a foto já foi reduzida ao máximo, mas o documento dessa parcela continua cheio (acumulou fotos de várias avaliações) — precisa de ajuste manual (ex.: mover fotos antigas pra fora do documento).';
-                gravarPendenciaLocal(chave, state.pendencias[chave]);
-              }
+            if(excedeuTamanho && ehFoto && state.pendencias[chave]){
+              state.pendencias[chave].ultimoErro = err.code;
+              state.pendencias[chave].ultimoErroMsg = err.message +
+                ' — essa foto não cabe mais nesse documento (limite de 1MB do Firestore). NÃO tentamos reduzir automaticamente (isso degradava a foto); precisa da correção estrutural (fotos em documento separado) pra resolver sem perder qualidade.';
+              gravarPendenciaLocal(chave, state.pendencias[chave]);
               continue;
             }
             // continua pendente — tenta de novo na próxima passada; guarda o motivo pra diagnóstico
