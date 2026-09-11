@@ -518,7 +518,8 @@ function explicarErroPendencia(codigo){
     'deadline-exceeded': 'conexão muito lenta, não respondeu a tempo',
     'unauthenticated': 'sessão expirada — tente sair e entrar de novo',
     'resource-exhausted': 'limite do servidor atingido, tentando de novo automaticamente',
-    'tempo esgotado ao tentar sincronizar': 'sem resposta do servidor (sem internet OU rede bloqueando o Firebase)'
+    'tempo esgotado ao tentar sincronizar': 'sem resposta do servidor (sem internet OU rede bloqueando o Firebase)',
+    'failed-precondition': 'o navegador não conseguiu abrir o banco de dados local (geralmente outra aba/janela do app aberta ao mesmo tempo nesse aparelho, ou armazenamento local com problema)'
   };
   return mapa[codigo] || (codigo ? `erro: ${codigo}` : 'ainda tentando pela primeira vez');
 }
@@ -2127,9 +2128,13 @@ document.getElementById('badgePendencias').addEventListener('click', async ()=>{
   const resumo = diagnosticoPendencias();
   if(!resumo) return;
   const aindaSemResposta = Object.values(state.pendencias).some(p=> p.ultimoErro === 'tempo esgotado ao tentar sincronizar');
+  const travouPrecondicao = Object.values(state.pendencias).some(p=> p.ultimoErro === 'failed-precondition');
   let extra = '';
   let ofereceReset = false;
-  if(aindaSemResposta){
+  if(travouPrecondicao){
+    extra = '\n\nTeste extra: esse erro (failed-precondition) normalmente significa que o navegador não conseguiu travar o banco de dados local pra essa aba — geralmente porque o app está aberto em MAIS de uma aba/janela/ícone ao mesmo tempo nesse aparelho (ex.: um ícone salvo na tela + o Safari aberto também, ou duas abas). Feche todas as outras abas/janelas do app nesse aparelho antes de tentar o reset abaixo.';
+    ofereceReset = true;
+  } else if(aindaSemResposta){
     const alcancouGoogle = await testarConectividadeGoogle();
     if(alcancouGoogle){
       extra = '\n\nTeste extra: o app conseguiu alcançar os servidores do Google agora mesmo, mas as gravações continuam travadas. Isso indica que o mecanismo interno de cache offline do Firestore (não a nossa fila própria) ficou preso nesse navegador.';
