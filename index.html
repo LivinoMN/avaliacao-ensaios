@@ -133,7 +133,7 @@
     <img id="logoHeader" alt="Equalizagro" style="height:42px; display:block; margin-bottom:8px;">
     <h1>Avaliação de Ensaios</h1>
     <div class="muted no-print">Vincule tratamentos a fotos, gere o croqui de campo e confira parcela por parcela.</div>
-    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-10</div>
+    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-11</div>
   </div>
   <div class="no-print" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <span class="muted" id="userInfo"></span>
@@ -562,6 +562,28 @@ function explicarErroPendencia(codigo){
   return mapa[codigo] || (codigo ? `erro: ${codigo}` : 'ainda tentando pela primeira vez');
 }
 
+// códigos de erro que NUNCA vão se resolver tentando de novo (dado rejeitado pelo servidor, não
+// problema de rede/conexão) — usado tanto pro resumo quanto pra oferecer descartar essas pendências
+const CODIGOS_PERMANENTES = ['invalid-argument', 'not-found', 'permission-denied'];
+
+function chavesPermanentes(){
+  return Object.entries(state.pendencias)
+    .filter(([_, p])=> CODIGOS_PERMANENTES.includes(p.ultimoErro))
+    .map(([chave])=> chave);
+}
+
+// descarta pendências que nunca vão conseguir sincronizar (usar com cautela — qualquer foto/dado
+// associado a essas chaves é perdido de vez, não fica guardado em nenhum lugar depois disso)
+async function descartarPendenciasPermanentes(){
+  const chaves = chavesPermanentes();
+  for(const chave of chaves){
+    delete state.pendencias[chave];
+    await removerPendenciaLocal(chave);
+  }
+  atualizarBadgePendencias();
+  return chaves.length;
+}
+
 // resumo legível de por que a fila ainda não sincronizou — mostrado ao clicar no badge
 function diagnosticoPendencias(){
   const itens = Object.values(state.pendencias);
@@ -575,7 +597,6 @@ function diagnosticoPendencias(){
   // erros permanentes (não resolvem tentando de novo) — mostra exemplos concretos (ensaio/parcela/
   // campo + mensagem original do Firestore) pra dar pra identificar o dado problemático sem precisar
   // de acesso ao console do navegador do aparelho
-  const CODIGOS_PERMANENTES = ['invalid-argument', 'not-found', 'permission-denied'];
   const permanentes = itens.filter(p=> CODIGOS_PERMANENTES.includes(p.ultimoErro));
   let detalhe = '';
   if(permanentes.length){
@@ -2268,9 +2289,15 @@ document.getElementById('badgePendencias').addEventListener('click', async ()=>{
   if(ofereceReset){
     const quer = confirm(resumo + extra + '\n\nQuer tentar resetar agora esse cache interno do Firestore? Seus dados pendentes NÃO serão apagados (eles ficam guardados separadamente) — só o mecanismo travado do Firestore é reiniciado, e a página recarrega em seguida.');
     if(quer) resetarCacheFirestore();
-  } else {
-    alert(resumo + extra);
+    return;
   }
+  const permanentes = chavesPermanentes();
+  if(permanentes.length){
+    const quer = confirm(resumo + extra + `\n\nQuer descartar ${permanentes.length === 1 ? 'essa pendência' : 'essas ' + permanentes.length + ' pendências'} permanentemente? Elas nunca vão conseguir sincronizar (dado rejeitado pelo servidor, não é problema de conexão) — descartar limpa o aviso, mas qualquer foto/dado associado a elas é perdido de vez.`);
+    if(quer) await descartarPendenciasPermanentes();
+    return;
+  }
+  alert(resumo + extra);
 });
 window.addEventListener('online', tentarSincronizarPendencias);
 setInterval(tentarSincronizarPendencias, 20000);
