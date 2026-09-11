@@ -133,7 +133,7 @@
     <img id="logoHeader" alt="Equalizagro" style="height:42px; display:block; margin-bottom:8px;">
     <h1>Avaliação de Ensaios</h1>
     <div class="muted no-print">Vincule tratamentos a fotos, gere o croqui de campo e confira parcela por parcela.</div>
-    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-06</div>
+    <div class="muted no-print" style="font-size:10.5px; opacity:0.6;">Build 2026-09-11-07</div>
   </div>
   <div class="no-print" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <span class="muted" id="userInfo"></span>
@@ -660,16 +660,22 @@ function tentarSincronizarPendencias(){
             // caso comum: ensaio com muitas avaliações, cada uma guardando sua própria foto no MESMO
             // documento da parcela — depois de algumas avaliações, o documento se aproxima do limite
             // de 1MB do Firestore e a próxima foto não cabe mais, mesmo já vindo comprimida da captura
-            // (compressImage). Nesse caso específico, reduz essa foto ainda mais (bem mais agressivo)
-            // e tenta regravar UMA vez antes de desistir — resolve a grande maioria dos casos sem
+            // (compressImage). Nesse caso específico, reduz essa foto em degraus cada vez mais
+            // agressivos e tenta regravar antes de desistir — resolve a grande maioria dos casos sem
             // precisar reabrir o app ou tirar a foto de novo.
+            // IMPORTANTE: NÃO usar uma flag persistida (tipo "já tentei, não tenta de novo") pra
+            // decidir se entra aqui — pendências antigas de uma versão anterior deste código (que só
+            // tentava reduzir uma vez, com um degrau só) já ficaram marcadas como "já tentado" no
+            // IndexedDB do aparelho, e essa marca sobrevive a atualizações de código. Se a gente
+            // checasse isso, itens antigos ficariam presos pra sempre mesmo depois de melhorar a
+            // lógica de redução — é sempre seguro tentar de novo aqui, o custo é só alguns segundos.
             const excedeuTamanho = err && err.code === 'invalid-argument' && /exceeds the maximum allowed size/i.test(err.message || '');
             const ehFoto = /foto$/i.test(p.campo) && typeof p.valor === 'string' && p.valor.indexOf('data:image') === 0;
-            if(excedeuTamanho && ehFoto && !p._reduzida){
+            if(excedeuTamanho && ehFoto){
               // ensaios com muitas avaliações acumuladas deixam cada vez menos espaço sobrando no
               // documento — uma redução fixa pode não bastar. Tenta em degraus cada vez mais agressivos
               // até caber ou esgotar as tentativas.
-              const DEGRAUS = [ {w:260,q:0.4}, {w:180,q:0.3}, {w:120,q:0.25}, {w:80,q:0.2} ];
+              const DEGRAUS = [ {w:260,q:0.4}, {w:180,q:0.3}, {w:120,q:0.25}, {w:80,q:0.2}, {w:60,q:0.15} ];
               const original = p.valor; // sempre reduz a partir do original — nunca em cima de uma versão já reduzida
               let sucesso = false, ultimoErr = null;
               for(const {w,q} of DEGRAUS){
@@ -680,7 +686,6 @@ function tentarSincronizarPendencias(){
                     15000
                   );
                   p.valor = menor;
-                  p._reduzida = true;
                   sucesso = true;
                   if(state.pendencias[chave] && state.pendencias[chave].ts === p.ts){
                     delete state.pendencias[chave];
@@ -693,7 +698,6 @@ function tentarSincronizarPendencias(){
                 }
               }
               if(!sucesso && state.pendencias[chave]){
-                state.pendencias[chave]._reduzida = true; // já tentamos todos os degraus, não repete de novo
                 state.pendencias[chave].ultimoErro = (ultimoErr && (ultimoErr.code || ultimoErr.message)) || 'desconhecido';
                 state.pendencias[chave].ultimoErroMsg = (ultimoErr && ultimoErr.message) ||
                   'a foto já foi reduzida ao máximo, mas o documento dessa parcela continua cheio (acumulou fotos de várias avaliações) — precisa de ajuste manual (ex.: mover fotos antigas pra fora do documento).';
