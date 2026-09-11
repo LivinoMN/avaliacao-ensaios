@@ -351,7 +351,21 @@ const db = firebase.firestore();
 // (uma técnica mais compatível, via requisições HTTP comuns em vez de streaming) quando necessário,
 // sem prejudicar quem está numa rede normal.
 db.settings({ experimentalAutoDetectLongPolling: true });
-db.enablePersistence({ synchronizeTabs: true }).catch(err=> console.warn('Persistência offline não disponível:', err));
+// IMPORTANTE: propositalmente NÃO chamamos db.enablePersistence() aqui.
+// A persistência offline embutida do Firestore (cache em IndexedDB) foi a causa raiz de uma série
+// de problemas específicos de iPad/Safari nesta app: gravações que ficavam penduradas para sempre
+// sem resolver nem rejeitar (por isso o comTimeout abaixo teve que existir), erros
+// "failed-precondition" quando o app abria em mais de uma aba/ícone ao mesmo tempo (disputa pela
+// trava exclusiva do IndexedDB), e um cache interno que ficava preso mesmo depois de confirmar que a
+// rede estava OK. Nós já temos nossa PRÓPRIA fila de pendências, durável e independente, guardada em
+// IndexedDB (PEND_DB_NAME/PEND_STORE mais abaixo) — ela sozinha garante que nada se perde offline.
+// Sem enablePersistence(), uma gravação feita offline falha rápido (normalmente com 'unavailable'),
+// o que é bom: nossa fila já trata isso e tenta de novo sozinha, em vez de ficar pendurada
+// indefinidamente esperando uma resposta que nunca chega. O único efeito colateral é que, se o app
+// for aberto do zero (recarregado) enquanto o aparelho já está offline, ensaios que ainda não tinham
+// sido carregados nesta sessão não aparecem até a conexão voltar — mas ensaios já abertos continuam
+// funcionando normalmente, pois ficam em memória via onSnapshot enquanto a aba estiver aberta.
+// db.enablePersistence({ synchronizeTabs: true }) — DESATIVADO DE PROPÓSITO, ver comentário acima.
 
 let state = {
   ensaios: {},
